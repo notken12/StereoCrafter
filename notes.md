@@ -5,7 +5,7 @@ create huggingface account and use personal access token with read perms to clon
 use python 3.10
 requirements.txt is not working, you should install each of the packages manually
 
-decord doesn't work for M4 macs, use evo-decord instead
+decord doesn't work for M4 macs, use eva-decord instead
 
 # Check the installed version (e.g., gcc-13)
 brew list gcc 
