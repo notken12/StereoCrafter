@@ -1,0 +1,13 @@
+torch
+torchvision
+fire
+accelerate
+safetensors
+transformers
+diffusers
+xformers
+av
+matplotlib
+mediapy
+opencv-python
+eva_decord
