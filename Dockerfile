@@ -35,8 +35,6 @@ RUN cd /app/dependency/Forward-Warp && \
 
 COPY . .
 
-COPY weights ./weights
-
 RUN mkdir -p outputs source_video
 
 WORKDIR /app
