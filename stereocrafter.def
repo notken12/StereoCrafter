@@ -1,44 +1,12 @@
-Bootstrap: docker
-From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+Bootstrap: localimage
+From: stereocrafter-base.sif
 
 %environment
     export DEBIAN_FRONTEND=noninteractive
     export PYTHONUNBUFFERED=1
-
-%post
-    apt-get update && apt-get install -y --no-install-recommends \
-        python3.10 \
-        python3.10-dev \
-        python3.10-distutils \
-        python3-pip \
-        git \
-        git-lfs \
-        ffmpeg \
-        libgl1-mesa-glx \
-        libglib2.0-0 \
-        wget \
-        ninja-build \
-        && rm -rf /var/lib/apt/lists/*
-
-    update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1
-    update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
-
-    python -m pip install --upgrade pip setuptools wheel
-
-    mkdir -p /app
-    cd /app
-
-    pip install --no-cache-dir -r requirements.txt
-
-    cd /app/dependency/Forward-Warp
-    chmod a+x install.sh
-    ./install.sh
-
-    mkdir -p /app/outputs /app/source_video
+    export PYTHONPATH=/app
 
 %files
-    requirements.txt /app/requirements.txt
-    dependency/Forward-Warp /app/dependency/Forward-Warp
     dependency/DepthCrafter /app/dependency/DepthCrafter
     depth_splatting_inference.py /app/depth_splatting_inference.py
     inpainting_inference.py /app/inpainting_inference.py
@@ -46,5 +14,8 @@ From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
     pipelines /app/pipelines
 
 %runscript
-    cd /app
-    exec python "$@"
+    if [ $# -eq 0 ]; then
+        exec sh /app/run_inference.sh
+    else
+        exec "$@"
+    fi
