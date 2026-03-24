@@ -26,6 +26,7 @@ From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
     export CUDA_HOME=/usr/local/cuda
     export PATH=$CUDA_HOME/bin:$PATH
     export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+    export TORCH_CUDA_ARCH_LIST="7.0;7.5;8.0;8.6"
 
     python -m pip install --upgrade pip setuptools wheel
 
