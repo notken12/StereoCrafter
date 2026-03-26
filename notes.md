@@ -14,6 +14,10 @@ brew list gcc
 CC=gcc-[version] CXX=g++-[version] pip install xformers
 # Example: CC=gcc-13 CXX=g++-13 pip install xformers
 
+# Build apptainers
+apptainer build stereocrafter-base.sif stereocrafter-base.def
+apptainer build stereocrafter.sif stereocrafter.def
+
 ## Inference ijob
 ijob -A shrew-crew -p gpu --gres=gpu:a100:1 --mem=48G -c 8 -t 4:00:00
 
