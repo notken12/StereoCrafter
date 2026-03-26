@@ -12,6 +12,7 @@ From: stereocrafter-base.sif
     inpainting_inference.py /app/inpainting_inference.py
     run_inference.sh /app/run_inference.sh
     pipelines /app/pipelines
+    app.py /app/app.py
 
 %runscript
     if [ $# -eq 0 ]; then

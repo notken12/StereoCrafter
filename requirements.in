@@ -11,3 +11,4 @@ matplotlib
 mediapy
 opencv-python
 eva_decord
+gradio
