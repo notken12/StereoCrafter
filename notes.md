@@ -27,3 +27,12 @@ apptainer exec --nv --env MAX_DISP=3.80 stereocrafter.sif sh run_inference.sh
 
 ## Download results
 rsync -avz --progress jjq7qj@login.hpc.virginia.edu:/scratch/jjq7qj/stereocrafter/outputs/ ~/Downloads/stereocrafter-outputs/
+
+# Run frontend
+Start inference ijob (see above)
+run `hostname`, record down what you get (it should look like "udc-an34-31")
+module load apptainer
+apptainer exec --nv stereocrafter.sif python frontend/main.py
+
+from your computer:
+ssh -NL 7860:<HOSTNAME_HERE>:6767 -Y jjq7qj@login.hpc.virginia.edu

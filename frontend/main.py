@@ -79,10 +79,11 @@ def run_inference(
     progress=gr.Progress(track_tqdm=True),
 ):
     max_disp = HUMAN_MAX_DISP * ipd / HUMAN_IPD
+    stem = os.path.splitext(os.path.basename(input_video))[0]
     job_id = uuid.uuid4().hex[:8]
-    splatting_path = os.path.join(OUTPUT_DIR, f"{job_id}_splatting_results.mp4")
-    sbs_path = os.path.join(OUTPUT_DIR, f"{job_id}_sbs.mp4")
-    anaglyph_path = os.path.join(OUTPUT_DIR, f"{job_id}_anaglyph.mp4")
+    splatting_path = os.path.join(OUTPUT_DIR, f"{stem}_{job_id}_splatting_results.mp4")
+    sbs_path = os.path.join(OUTPUT_DIR, f"{stem}_{job_id}_sbs.mp4")
+    anaglyph_path = os.path.join(OUTPUT_DIR, f"{stem}_{job_id}_anaglyph.mp4")
 
     # Stage 1: depth estimation
     progress(0.0, desc="Estimating depth...")
@@ -203,7 +204,7 @@ def run_inference(
     torch.cuda.empty_cache()
     progress(1.0, desc="Done!")
 
-    return sbs_path, anaglyph_path
+    return sbs_path, anaglyph_path, splatting_path
 
 
 with gr.Blocks(title="StereoCrafter") as demo:
@@ -249,11 +250,20 @@ with gr.Blocks(title="StereoCrafter") as demo:
             output_anaglyph = gr.Video(
                 label="Anaglyph 3D (Red-Cyan glasses)", autoplay=True, loop=True
             )
+            with gr.Accordion("Intermediate Results", open=False):
+                output_splatting = gr.Video(
+                    label="Depth Splatting Grid", autoplay=True, loop=True
+                )
+                download_splatting = gr.File(label="Download Splatting Video")
 
     run_btn.click(
         fn=run_inference,
         inputs=[input_video, ipd, process_length, tile_num],
-        outputs=[output_sbs, output_anaglyph],
+        outputs=[output_sbs, output_anaglyph, output_splatting],
+    ).then(
+        fn=lambda path: path,
+        inputs=[output_splatting],
+        outputs=[download_splatting],
     )
 
 
