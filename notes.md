@@ -19,7 +19,7 @@ apptainer build stereocrafter-base.sif stereocrafter-base.def
 apptainer build stereocrafter.sif stereocrafter.def
 
 ## Inference ijob
-ijob -A shrew-crew -p gpu --gres=gpu:a100:1 --mem=48G -c 8 -t 4:00:00
+ijob -A shrew-crew -p gpu --gres=gpu:a100:1 --mem=64G -c 8
 
 ## Run stereocrafter
 module load apptainer
