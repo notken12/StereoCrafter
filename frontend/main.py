@@ -71,22 +71,26 @@ def load_models():
 depthcrafter, inpainting_pipeline = load_models()
 
 
-def run_inference(
+def process_single_video(
     input_video: str,
-    ipd: float,
+    max_disp: float,
     process_length: int,
     tile_num: int,
-    progress=gr.Progress(track_tqdm=True),
-):
-    max_disp = HUMAN_MAX_DISP * ipd / HUMAN_IPD
+    progress_offset: float,
+    progress_scale: float,
+    progress,
+) -> tuple[str, str, str]:
     stem = os.path.splitext(os.path.basename(input_video))[0]
     job_id = uuid.uuid4().hex[:8]
     splatting_path = os.path.join(OUTPUT_DIR, f"{stem}_{job_id}_splatting_results.mp4")
     sbs_path = os.path.join(OUTPUT_DIR, f"{stem}_{job_id}_sbs.mp4")
     anaglyph_path = os.path.join(OUTPUT_DIR, f"{stem}_{job_id}_anaglyph.mp4")
 
+    def p(frac, desc):
+        progress(progress_offset + frac * progress_scale, desc=desc)
+
     # Stage 1: depth estimation
-    progress(0.0, desc="Estimating depth...")
+    p(0.0, f"[{stem}] Estimating depth...")
     video_depth, depth_vis = depthcrafter.infer(
         input_video_path=input_video,
         output_video_path=splatting_path,
@@ -94,7 +98,7 @@ def run_inference(
     )
 
     # Stage 1: forward splatting
-    progress(0.35, desc="Splatting to right view...")
+    p(0.35, f"[{stem}] Splatting to right view...")
     DepthSplatting(
         input_video_path=input_video,
         output_video_path=splatting_path,
@@ -106,7 +110,7 @@ def run_inference(
     )
 
     # Stage 2: stereo inpainting
-    progress(0.5, desc="Running stereo inpainting...")
+    p(0.5, f"[{stem}] Running stereo inpainting...")
     frames_chunk = 23
     overlap = 3
 
@@ -183,7 +187,7 @@ def run_inference(
             generated = generated[cur_overlap:]
         results.append(generated)
 
-        progress(0.5 + 0.45 * (i / num_frames), desc="Running stereo inpainting...")
+        p(0.5 + 0.45 * (i / num_frames), f"[{stem}] Running stereo inpainting...")
 
     frames_output = torch.cat(results, dim=0).cpu()
 
@@ -202,9 +206,42 @@ def run_inference(
 
     gc.collect()
     torch.cuda.empty_cache()
-    progress(1.0, desc="Done!")
 
     return sbs_path, anaglyph_path, splatting_path
+
+
+def run_inference(
+    input_files: list,
+    ipd: float,
+    process_length: int,
+    tile_num: int,
+    progress=gr.Progress(track_tqdm=True),
+):
+    if not input_files:
+        raise gr.Error("Please upload at least one video.")
+
+    max_disp = HUMAN_MAX_DISP * ipd / HUMAN_IPD
+    n = len(input_files)
+    all_outputs = []
+
+    for idx, file in enumerate(input_files):
+        video_path = file if isinstance(file, str) else file.name
+        sbs, anaglyph, splatting = process_single_video(
+            input_video=video_path,
+            max_disp=max_disp,
+            process_length=int(process_length),
+            tile_num=int(tile_num),
+            progress_offset=idx / n,
+            progress_scale=1.0 / n,
+            progress=progress,
+        )
+        all_outputs.append((sbs, anaglyph, splatting))
+        progress((idx + 1) / n, desc=f"Finished {idx + 1}/{n} videos.")
+
+    last_sbs, last_anaglyph, last_splatting = all_outputs[-1]
+    all_files = [path for sbs, anaglyph, splatting in all_outputs for path in (sbs, anaglyph, splatting)]
+
+    return last_sbs, last_anaglyph, last_splatting, all_files
 
 
 with gr.Blocks(title="StereoCrafter") as demo:
@@ -217,7 +254,11 @@ with gr.Blocks(title="StereoCrafter") as demo:
 
     with gr.Row():
         with gr.Column(scale=1):
-            input_video = gr.Video(label="Input Video")
+            input_files = gr.File(
+                label="Input Videos",
+                file_count="multiple",
+                file_types=["video"],
+            )
             with gr.Accordion("Settings", open=True):
                 ipd = gr.Slider(
                     label="Interpupillary Distance (mm)",
@@ -246,6 +287,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
             run_btn = gr.Button("Generate Stereo Video", variant="primary")
 
         with gr.Column(scale=2):
+            gr.Markdown("#### Preview (last video)")
             output_sbs = gr.Video(label="Side-by-Side", autoplay=True, loop=True)
             output_anaglyph = gr.Video(
                 label="Anaglyph 3D (Red-Cyan glasses)", autoplay=True, loop=True
@@ -254,16 +296,13 @@ with gr.Blocks(title="StereoCrafter") as demo:
                 output_splatting = gr.Video(
                     label="Depth Splatting Grid", autoplay=True, loop=True
                 )
-                download_splatting = gr.File(label="Download Splatting Video")
+            gr.Markdown("#### Download All Outputs")
+            output_files = gr.Files(label="All output videos (SBS, anaglyph, splatting)")
 
     run_btn.click(
         fn=run_inference,
-        inputs=[input_video, ipd, process_length, tile_num],
-        outputs=[output_sbs, output_anaglyph, output_splatting],
-    ).then(
-        fn=lambda path: path,
-        inputs=[output_splatting],
-        outputs=[download_splatting],
+        inputs=[input_files, ipd, process_length, tile_num],
+        outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
     )
 
 
