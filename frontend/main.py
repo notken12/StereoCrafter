@@ -248,6 +248,17 @@ def run_inference(
     return last_sbs, last_anaglyph, last_splatting, all_files
 
 
+def list_past_generations() -> list[str]:
+    if not os.path.isdir(OUTPUT_DIR):
+        return []
+    files = sorted(
+        (os.path.join(OUTPUT_DIR, f) for f in os.listdir(OUTPUT_DIR) if f.endswith(".mp4")),
+        key=os.path.getmtime,
+        reverse=True,
+    )
+    return files
+
+
 with gr.Blocks(title="StereoCrafter") as demo:
     gr.Markdown(
         """
@@ -311,10 +322,21 @@ with gr.Blocks(title="StereoCrafter") as demo:
             gr.Markdown("#### Download All Outputs")
             output_files = gr.Files(label="All output videos (SBS, anaglyph, splatting)")
 
+    with gr.Accordion("Past Generations", open=False):
+        refresh_btn = gr.Button("Refresh", size="sm")
+        past_files = gr.Files(
+            label="All output videos",
+            value=list_past_generations,
+        )
+        refresh_btn.click(fn=list_past_generations, outputs=[past_files])
+
     run_btn.click(
         fn=run_inference,
         inputs=[input_files, ipd, process_length, tile_num, max_res],
         outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
+    ).then(
+        fn=list_past_generations,
+        outputs=[past_files],
     )
 
 
