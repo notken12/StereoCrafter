@@ -216,28 +216,28 @@ def DepthSplatting(
     '''
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
     original_fps = vid_reader.get_avg_fps()
-    input_frames = vid_reader[:].asnumpy() / 255.0
 
-    if process_length != -1 and process_length < len(input_frames):
-        input_frames = input_frames[:process_length]
-        video_depth = video_depth[:process_length]
-        depth_vis = depth_vis[:process_length]
+    total_frames = len(vid_reader)
+    num_frames = total_frames if process_length == -1 else min(process_length, total_frames)
+    video_depth = video_depth[:num_frames]
+    depth_vis = depth_vis[:num_frames]
 
     stereo_projector = ForwardWarpStereo(occlu_map=True).cuda()
 
-    num_frames = len(input_frames)
-    height, width, _ = input_frames[0].shape
+    first_frame = vid_reader[0].asnumpy()
+    height, width, _ = first_frame.shape
 
     # Initialize OpenCV VideoWriter
     out = cv2.VideoWriter(
-        output_video_path, 
+        output_video_path,
         cv2.VideoWriter_fourcc(*"mp4v"),
-        original_fps, 
+        original_fps,
         (width * 2, height * 2)
     )
 
     for i in range(0, num_frames, batch_size):
-        batch_frames = input_frames[i:i+batch_size]
+        batch_indices = list(range(i, min(i + batch_size, num_frames)))
+        batch_frames = vid_reader.get_batch(batch_indices).asnumpy() / 255.0
         batch_depth = video_depth[i:i+batch_size]
         batch_depth_vis = depth_vis[i:i+batch_size]
 

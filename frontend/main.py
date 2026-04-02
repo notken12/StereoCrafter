@@ -76,6 +76,7 @@ def process_single_video(
     max_disp: float,
     process_length: int,
     tile_num: int,
+    max_res: int,
     progress_offset: float,
     progress_scale: float,
     progress,
@@ -95,6 +96,7 @@ def process_single_video(
         input_video_path=input_video,
         output_video_path=splatting_path,
         process_length=int(process_length),
+        max_res=int(max_res),
     )
 
     # Stage 1: forward splatting
@@ -215,6 +217,7 @@ def run_inference(
     ipd: float,
     process_length: int,
     tile_num: int,
+    max_res: int,
     progress=gr.Progress(track_tqdm=True),
 ):
     if not input_files:
@@ -231,6 +234,7 @@ def run_inference(
             max_disp=max_disp,
             process_length=int(process_length),
             tile_num=int(tile_num),
+            max_res=int(max_res),
             progress_offset=idx / n,
             progress_scale=1.0 / n,
             progress=progress,
@@ -284,6 +288,14 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     step=1,
                     info="Increase for high-resolution video to reduce VRAM usage.",
                 )
+                max_res = gr.Slider(
+                    label="Max Resolution",
+                    minimum=256,
+                    maximum=1024,
+                    value=1024,
+                    step=64,
+                    info="Cap the longer edge of the video. Lower values use less RAM and run faster.",
+                )
             run_btn = gr.Button("Generate Stereo Video", variant="primary")
 
         with gr.Column(scale=2):
@@ -301,7 +313,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
 
     run_btn.click(
         fn=run_inference,
-        inputs=[input_files, ipd, process_length, tile_num],
+        inputs=[input_files, ipd, process_length, tile_num, max_res],
         outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
     )
 
