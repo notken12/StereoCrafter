@@ -4,3 +4,6 @@
 [submodule "dependency/Forward-Warp"]
 	path = dependency/Forward-Warp
 	url = https://github.com/wbhu/Forward-Warp.git
+[submodule "dependency/Video-Depth-Anything"]
+	path = dependency/Video-Depth-Anything
+	url = https://github.com/DepthAnything/Video-Depth-Anything.git

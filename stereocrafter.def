@@ -8,6 +8,7 @@ From: stereocrafter-base.sif
 
 %files
     dependency/DepthCrafter /app/dependency/DepthCrafter
+    dependency/Video-Depth-Anything /app/dependency/Video-Depth-Anything
     depth_splatting_inference.py /app/depth_splatting_inference.py
     inpainting_inference.py /app/inpainting_inference.py
     run_inference.sh /app/run_inference.sh
@@ -16,6 +17,7 @@ From: stereocrafter-base.sif
 
 %post
     pip install --no-cache-dir -r /app/frontend/requirements.txt
+    pip install -r /app/dependency/Video-Depth-Anything/requirements.txt
 
 %runscript
     if [ $# -eq 0 ]; then
