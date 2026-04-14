@@ -315,9 +315,9 @@ with gr.Blocks(title="StereoCrafter") as demo:
             with gr.Accordion("Settings", open=True):
                 ipd_mm = gr.Slider(
                     label="Interpupillary distance (mm)",
-                    minimum=40.0,
+                    minimum=5.0,
                     maximum=80.0,
-                    value=63.0,
+                    value=12.5,
                     step=0.1,
                     info="Real-world eye separation; sets stereo baseline B = IPD / 1000 in meters.",
                 )
