@@ -52,9 +52,15 @@ cd StereoCrafter
 ```
 
 #### 3. Install the requirements
+
+PyTorch must match your CUDA version. The Apptainer base image uses **CUDA 11.8**; install the `cu118` wheels first, then the rest:
+
 ```bash
+pip install torch==2.1.1 torchvision==0.16.1 xformers==0.0.23 --index-url https://download.pytorch.org/whl/cu118
 pip install -r requirements.txt
 ```
+
+For **CUDA 12.1**, use `--index-url https://download.pytorch.org/whl/cu121` instead. See comments at the top of `requirements.txt`.
 
 
 #### 4. Install customized 'Forward-Warp' package for forward splatting

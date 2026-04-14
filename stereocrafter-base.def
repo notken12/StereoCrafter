@@ -33,6 +33,12 @@ From: nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
     mkdir -p /app
     cd /app
 
+    # PyTorch from PyPI defaults to cu121; this image is CUDA 11.8. Match the toolkit
+    # or Forward-Warp's torch.utils.cpp_extension build fails (CUDA version mismatch).
+    pip install --no-cache-dir \
+        torch==2.1.1 torchvision==0.16.1 xformers==0.0.23 \
+        --index-url https://download.pytorch.org/whl/cu118
+
     pip install --no-cache-dir -r requirements.txt
 
     cd /app/dependency/Forward-Warp/Forward_Warp/cuda

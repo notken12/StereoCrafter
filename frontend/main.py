@@ -265,7 +265,11 @@ def run_inference(
         progress((idx + 1) / n, desc=f"Finished {idx + 1}/{n} videos.")
 
     last_sbs, last_anaglyph, last_splatting = all_outputs[-1]
-    all_files = [path for sbs, anaglyph, splatting in all_outputs for path in (sbs, anaglyph, splatting)]
+    all_files = [
+        path
+        for sbs, anaglyph, splatting in all_outputs
+        for path in (sbs, anaglyph, splatting)
+    ]
 
     return last_sbs, last_anaglyph, last_splatting, all_files
 
@@ -274,7 +278,11 @@ def list_past_generations() -> list[str]:
     if not os.path.isdir(OUTPUT_DIR):
         return []
     files = sorted(
-        (os.path.join(OUTPUT_DIR, f) for f in os.listdir(OUTPUT_DIR) if f.endswith(".mp4")),
+        (
+            os.path.join(OUTPUT_DIR, f)
+            for f in os.listdir(OUTPUT_DIR)
+            if f.endswith(".mp4")
+        ),
         key=os.path.getmtime,
         reverse=True,
     )
@@ -367,7 +375,9 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     label="Depth Splatting Grid", autoplay=True, loop=True
                 )
             gr.Markdown("#### Download All Outputs")
-            output_files = gr.Files(label="All output videos (SBS, anaglyph, splatting)")
+            output_files = gr.Files(
+                label="All output videos (SBS, anaglyph, splatting)"
+            )
 
     with gr.Accordion("Past Generations", open=False):
         refresh_btn = gr.Button("Refresh", size="sm")
