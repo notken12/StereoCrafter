@@ -9,31 +9,40 @@ from decord import VideoReader, cpu
 from transformers import CLIPVisionModelWithProjection
 from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 
-from depth_splatting_inference import DepthCrafterDemo, DepthSplatting
+from depth_splatting_inference import VideoDepthAnythingDemo, DepthSplatting
 from pipelines.stereo_video_inpainting import (
     StableVideoDiffusionInpaintingPipeline,
     tensor2vid,
 )
 from inpainting_inference import spatial_tiled_process, write_video_opencv
 
-HUMAN_MAX_DISP = 20.0
-HUMAN_IPD = 63.0
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PRE_TRAINED_PATH = os.environ.get(
     "PRE_TRAINED_PATH", "./weights/stable-video-diffusion-img2vid-xt-1-1"
 )
-DEPTHCRAFTER_PATH = os.environ.get("DEPTHCRAFTER_PATH", "./weights/DepthCrafter")
 STEREOCRAFTER_PATH = os.environ.get("STEREOCRAFTER_PATH", "./weights/StereoCrafter")
+VIDEO_DEPTH_CHECKPOINT = os.environ.get(
+    "VIDEO_DEPTH_CHECKPOINT",
+    os.path.join(_REPO_ROOT, "weights", "metric_video_depth_anything_vitl.pth"),
+)
+VIDEO_DEPTH_ENCODER = os.environ.get("VIDEO_DEPTH_ENCODER", "vitl")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./outputs")
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def load_models():
-    print("Loading DepthCrafter pipeline...")
-    depthcrafter = DepthCrafterDemo(
-        unet_path=DEPTHCRAFTER_PATH,
-        pre_trained_path=PRE_TRAINED_PATH,
+    print("Loading Metric Video Depth Anything...")
+    if not os.path.isfile(VIDEO_DEPTH_CHECKPOINT):
+        raise FileNotFoundError(
+            f"Missing depth weights: {VIDEO_DEPTH_CHECKPOINT}\n"
+            "Download metric_video_depth_anything_*.pth (see dependency/Video-Depth-Anything/get_weights.sh) "
+            "or set VIDEO_DEPTH_CHECKPOINT."
+        )
+    depth_model = VideoDepthAnythingDemo(
+        checkpoint_path=VIDEO_DEPTH_CHECKPOINT,
+        encoder=VIDEO_DEPTH_ENCODER,
     )
 
     print("Loading StereoCrafter pipeline...")
@@ -65,15 +74,18 @@ def load_models():
     ).to("cuda")
 
     print("All models loaded.")
-    return depthcrafter, inpainting_pipeline
+    return depth_model, inpainting_pipeline
 
 
-depthcrafter, inpainting_pipeline = load_models()
+depth_model, inpainting_pipeline = load_models()
 
 
 def process_single_video(
     input_video: str,
-    max_disp: float,
+    ipd_mm: float,
+    horizontal_fov_deg: float,
+    focal_length_px: float,
+    max_disp_px: float,
     process_length: int,
     tile_num: int,
     max_res: int,
@@ -90,28 +102,35 @@ def process_single_video(
     def p(frac, desc):
         progress(progress_offset + frac * progress_scale, desc=desc)
 
-    # Stage 1: depth estimation
-    p(0.0, f"[{stem}] Estimating depth...")
-    video_depth, depth_vis = depthcrafter.infer(
+    baseline_m = float(ipd_mm) * 1e-3
+    f_px = float(focal_length_px) if focal_length_px > 0 else None
+    hfov = float(horizontal_fov_deg) if f_px is None else None
+    clamp_px = float(max_disp_px) if max_disp_px > 0 else None
+
+    p(0.0, f"[{stem}] Estimating metric depth...")
+    video_depth, depth_vis = depth_model.infer(
         input_video_path=input_video,
         output_video_path=splatting_path,
         process_length=int(process_length),
         max_res=int(max_res),
     )
 
-    # Stage 1: forward splatting
-    p(0.35, f"[{stem}] Splatting to right view...")
+    p(0.35, f"[{stem}] Splatting to right view (disp = f*B/Z)...")
     DepthSplatting(
         input_video_path=input_video,
         output_video_path=splatting_path,
         video_depth=video_depth,
         depth_vis=depth_vis,
-        max_disp=float(max_disp),
         process_length=int(process_length),
         batch_size=10,
+        use_metric_depth=True,
+        focal_length_px=f_px,
+        horizontal_fov_deg=hfov,
+        baseline_m=baseline_m,
+        min_depth_m=1e-3,
+        max_disp_px=clamp_px,
     )
 
-    # Stage 2: stereo inpainting
     p(0.5, f"[{stem}] Running stereo inpainting...")
     frames_chunk = 23
     overlap = 3
@@ -193,12 +212,10 @@ def process_single_video(
 
     frames_output = torch.cat(results, dim=0).cpu()
 
-    # Side-by-side output
     frames_sbs = torch.cat([frames_left, frames_output], dim=3)
     frames_sbs = (frames_sbs * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).numpy()
     write_video_opencv(frames_sbs, fps, sbs_path)
 
-    # Anaglyph output
     vid_left = (frames_left * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).numpy()
     vid_right = (frames_output * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).numpy()
     vid_left[:, :, :, 1] = 0
@@ -214,7 +231,10 @@ def process_single_video(
 
 def run_inference(
     input_files: list,
-    ipd: float,
+    ipd_mm: float,
+    horizontal_fov_deg: float,
+    focal_length_px: float,
+    max_disp_px: float,
     process_length: int,
     tile_num: int,
     max_res: int,
@@ -223,7 +243,6 @@ def run_inference(
     if not input_files:
         raise gr.Error("Please upload at least one video.")
 
-    max_disp = HUMAN_MAX_DISP * ipd / HUMAN_IPD
     n = len(input_files)
     all_outputs = []
 
@@ -231,7 +250,10 @@ def run_inference(
         video_path = file if isinstance(file, str) else file.name
         sbs, anaglyph, splatting = process_single_video(
             input_video=video_path,
-            max_disp=max_disp,
+            ipd_mm=float(ipd_mm),
+            horizontal_fov_deg=float(horizontal_fov_deg),
+            focal_length_px=float(focal_length_px),
+            max_disp_px=float(max_disp_px),
             process_length=int(process_length),
             tile_num=int(tile_num),
             max_res=int(max_res),
@@ -264,6 +286,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
         """
         # StereoCrafter
         Convert monocular video to immersive stereoscopic 3D.
+        Depth uses **Metric Video Depth Anything**; splatting disparity is **f·B / Z** (focal × baseline / depth).
         """
     )
 
@@ -275,13 +298,37 @@ with gr.Blocks(title="StereoCrafter") as demo:
                 file_types=["video"],
             )
             with gr.Accordion("Settings", open=True):
-                ipd = gr.Slider(
-                    label="Interpupillary Distance (mm)",
-                    minimum=1,
-                    maximum=100,
-                    value=12,
+                ipd_mm = gr.Slider(
+                    label="Interpupillary distance (mm)",
+                    minimum=40.0,
+                    maximum=80.0,
+                    value=63.0,
                     step=0.1,
-                    info="Distance between the eyes. Higher = stronger 3D effect.",
+                    info="Real-world eye separation; sets stereo baseline B = IPD / 1000 in meters.",
+                )
+                horizontal_fov_deg = gr.Slider(
+                    label="Horizontal field of view (°)",
+                    minimum=20.0,
+                    maximum=120.0,
+                    value=55.0,
+                    step=0.5,
+                    info="Used to estimate focal length f from frame width: f = (W/2) / tan(HFOV/2). Ignored if focal length > 0.",
+                )
+                focal_length_px = gr.Slider(
+                    label="Focal length override (px, 0 = use HFOV)",
+                    minimum=0.0,
+                    maximum=4000.0,
+                    value=0.0,
+                    step=1.0,
+                    info="If > 0, use this fx in pixels instead of HFOV.",
+                )
+                max_disp_px = gr.Slider(
+                    label="Max disparity clamp (px)",
+                    minimum=0.0,
+                    maximum=2000.0,
+                    value=500.0,
+                    step=1.0,
+                    info="Caps splatting disparity for stability (0 disables clamp).",
                 )
                 process_length = gr.Slider(
                     label="Process Length (frames)",
@@ -305,7 +352,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     maximum=1024,
                     value=1024,
                     step=64,
-                    info="Cap the longer edge of the video. Lower values use less RAM and run faster.",
+                    info="Cap the longer edge for depth inference. Output splatting uses full-resolution video.",
                 )
             run_btn = gr.Button("Generate Stereo Video", variant="primary")
 
@@ -332,7 +379,16 @@ with gr.Blocks(title="StereoCrafter") as demo:
 
     run_btn.click(
         fn=run_inference,
-        inputs=[input_files, ipd, process_length, tile_num, max_res],
+        inputs=[
+            input_files,
+            ipd_mm,
+            horizontal_fov_deg,
+            focal_length_px,
+            max_disp_px,
+            process_length,
+            tile_num,
+            max_res,
+        ],
         outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
     ).then(
         fn=list_past_generations,

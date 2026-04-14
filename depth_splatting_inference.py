@@ -1,161 +1,113 @@
 import gc
 import cv2
 import os
+import sys
+from typing import Optional
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchvision.io import write_video
-
-from diffusers.training_utils import set_seed
+import matplotlib.cm as cm
 from fire import Fire
 from decord import VideoReader, cpu
 
-from dependency.DepthCrafter.depthcrafter.depth_crafter_ppl import DepthCrafterPipeline
-from dependency.DepthCrafter.depthcrafter.unet import DiffusersUNetSpatioTemporalConditionModelDepthCrafter
-from dependency.DepthCrafter.depthcrafter.utils import vis_sequence_depth
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_VDA_ROOT = os.path.join(_REPO_ROOT, "dependency", "Video-Depth-Anything")
+if _VDA_ROOT not in sys.path:
+    sys.path.insert(0, _VDA_ROOT)
+
+from video_depth_anything.video_depth import VideoDepthAnything
+from utils.dc_utils import read_video_frames
 
 from Forward_Warp import forward_warp
 
 
-def read_video_frames(video_path, process_length, target_fps, max_res, dataset="open"):
-    if dataset == "open":
-        print("==> processing video: ", video_path)
-        vid = VideoReader(video_path, ctx=cpu(0))
-        print("==> original video shape: ", (len(vid), *vid.get_batch([0]).shape[1:]))
-        original_height, original_width = vid.get_batch([0]).shape[1:3]
-        height = round(original_height / 64) * 64
-        width = round(original_width / 64) * 64
-        if max(height, width) > max_res:
-            scale = max_res / max(original_height, original_width)
-            height = round(original_height * scale / 64) * 64
-            width = round(original_width * scale / 64) * 64
-    else:
-        height = dataset_res_dict[dataset][0]
-        width = dataset_res_dict[dataset][1]
-
-    vid = VideoReader(video_path, ctx=cpu(0), width=width, height=height)
-
-    fps = vid.get_avg_fps() if target_fps == -1 else target_fps
-    stride = round(vid.get_avg_fps() / fps)
-    stride = max(stride, 1)
-    frames_idx = list(range(0, len(vid), stride))
-    print(
-        f"==> downsampled shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}, with stride: {stride}"
-    )
-    if process_length != -1 and process_length < len(frames_idx):
-        frames_idx = frames_idx[:process_length]
-    print(
-        f"==> final processing shape: {len(frames_idx), *vid.get_batch([0]).shape[1:]}"
-    )
-    frames = vid.get_batch(frames_idx).asnumpy().astype("float32") / 255.0
-
-    return frames, fps, original_height, original_width
+def depth_sequence_to_vis(depths_thw: np.ndarray) -> np.ndarray:
+    """RGB visualization [T,H,W,3] float in [0, 1], inferno colormap (global min/max)."""
+    colormap = np.array(cm.get_cmap("inferno").colors)
+    d_min, d_max = float(depths_thw.min()), float(depths_thw.max())
+    span = d_max - d_min if d_max > d_min else 1e-6
+    out = np.empty((*depths_thw.shape, 3), dtype=np.float32)
+    for i in range(depths_thw.shape[0]):
+        dn = ((depths_thw[i] - d_min) / span * 255.0).astype(np.int64)
+        dn = np.clip(dn, 0, colormap.shape[0] - 1)
+        out[i] = colormap[dn]
+    return out
 
 
-class DepthCrafterDemo:
+_VDA_MODEL_CONFIGS = {
+    "vits": {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]},
+    "vitb": {"encoder": "vitb", "features": 128, "out_channels": [96, 192, 384, 768]},
+    "vitl": {"encoder": "vitl", "features": 256, "out_channels": [256, 512, 1024, 1024]},
+}
+
+
+class VideoDepthAnythingDemo:
+    """Metric Video Depth Anything: depth in meters (approx.), temporally aligned."""
+
     def __init__(
         self,
-        unet_path: str,
-        pre_trained_path: str,
-        cpu_offload: str = "model",
+        checkpoint_path: str,
+        encoder: str = "vitl",
+        device: Optional[str] = None,
     ):
-        unet = DiffusersUNetSpatioTemporalConditionModelDepthCrafter.from_pretrained(
-            unet_path,
-            low_cpu_mem_usage=True,
-            torch_dtype=torch.float16,
-        )
-        # load weights of other components from the provided checkpoint
-        self.pipe = DepthCrafterPipeline.from_pretrained(
-            pre_trained_path,
-            unet=unet,
-            torch_dtype=torch.float16,
-            variant="fp16",
-        )
-
-        # for saving memory, we can offload the model to CPU, or even run the model sequentially to save more memory
-        if cpu_offload is not None:
-            if cpu_offload == "sequential":
-                # This will slow, but save more memory
-                self.pipe.enable_sequential_cpu_offload()
-            elif cpu_offload == "model":
-                self.pipe.enable_model_cpu_offload()
-            else:
-                raise ValueError(f"Unknown cpu offload option: {cpu_offload}")
-        else:
-            self.pipe.to("cuda")
-        # enable attention slicing and xformers memory efficient attention
-        try:
-            self.pipe.enable_xformers_memory_efficient_attention()
-        except Exception as e:
-            print(e)
-            print("Xformers is not enabled")
-        self.pipe.enable_attention_slicing()
+        if encoder not in _VDA_MODEL_CONFIGS:
+            raise ValueError(f"encoder must be one of {list(_VDA_MODEL_CONFIGS)}, got {encoder}")
+        dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = dev
+        cfg = {**_VDA_MODEL_CONFIGS[encoder], "metric": True}
+        self.model = VideoDepthAnything(**cfg)
+        state = torch.load(checkpoint_path, map_location="cpu")
+        self.model.load_state_dict(state, strict=True)
+        self.model = self.model.to(dev).eval()
 
     def infer(
         self,
         input_video_path: str,
         output_video_path: str,
         process_length: int = -1,
-        num_denoising_steps: int = 8,
-        guidance_scale: float = 1.2,
-        window_size: int = 70,
-        overlap: int = 25,
         max_res: int = 1024,
-        dataset: str = "open",
         target_fps: int = -1,
-        seed: int = 42,
-        track_time: bool = False,
+        input_size: int = 518,
+        fp32: bool = False,
         save_depth: bool = False,
     ):
-        set_seed(seed)
+        vid_full = VideoReader(input_video_path, ctx=cpu(0))
+        original_height, original_width = vid_full.get_batch([0]).shape[1:3]
 
-        frames, target_fps, original_height, original_width = read_video_frames(
-            input_video_path,
-            process_length,
-            target_fps,
-            max_res,
-            dataset,
+        frames, target_fps = read_video_frames(
+            input_video_path, process_length, target_fps, max_res
         )
+        inf_h, inf_w = int(frames.shape[1]), int(frames.shape[2])
 
-        # inference the depth map using the DepthCrafter pipeline
         with torch.inference_mode():
-            res = self.pipe(
-                frames,
-                height=frames.shape[1],
-                width=frames.shape[2],
-                output_type="np",
-                guidance_scale=guidance_scale,
-                num_inference_steps=num_denoising_steps,
-                window_size=window_size,
-                overlap=overlap,
-                track_time=track_time,
-            ).frames[0]
+            depths, _ = self.model.infer_video_depth(
+                frames, target_fps, input_size=input_size, device=self.device, fp32=fp32
+            )
 
-        # convert the three-channel output to a single channel depth map
-        res = res.sum(-1) / res.shape[-1]
+        if (inf_h, inf_w) != (original_height, original_width):
+            t = torch.from_numpy(depths.astype(np.float32)).unsqueeze(1)
+            t = F.interpolate(
+                t,
+                size=(original_height, original_width),
+                mode="bilinear",
+                align_corners=True,
+            )
+            depths = t.numpy()[:, 0, :, :]
 
-        # resize the depth to the original size
-        tensor_res = torch.tensor(res).unsqueeze(1).float().contiguous().cuda()
-        res = F.interpolate(tensor_res, size=(original_height, original_width), mode='bilinear', align_corners=False)
-        res = res.cpu().numpy()[:,0,:,:]
-        
-        # normalize the depth map to [0, 1] across the whole video
-        res = (res - res.min()) / (res.max() - res.min())
-        # visualize the depth map and save the results
-        vis = vis_sequence_depth(res)
-        # save the depth map and visualization with the target FPS
-        save_path = os.path.join(
-            os.path.dirname(output_video_path), os.path.splitext(os.path.basename(output_video_path))[0]
-        )
+        vis = depth_sequence_to_vis(depths)
 
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         if save_depth:
-            np.savez_compressed(save_path + ".npz", depth=res)
-            write_video(save_path + "_depth_vis.mp4", vis*255.0, fps=target_fps, video_codec="h264", options={"crf": "16"})
+            save_path = os.path.join(
+                os.path.dirname(output_video_path),
+                os.path.splitext(os.path.basename(output_video_path))[0],
+            )
+            os.makedirs(os.path.dirname(save_path), exist_ok=True)
+            np.savez_compressed(save_path + ".npz", depth=depths)
 
-        return res, vis
-    
+        return depths, vis
+
 
 class ForwardWarpStereo(nn.Module):
     def __init__(self, eps=1e-6, occlu_map=False):
@@ -165,55 +117,54 @@ class ForwardWarpStereo(nn.Module):
         self.fw = forward_warp()
 
     def forward(self, im, disp):
-        """
-        :param im: BCHW
-        :param disp: B1HW
-        :return: BCHW
-        detach will lead to unconverge!!
-        """
         im = im.contiguous()
         disp = disp.contiguous()
-        # weights_map = torch.abs(disp)
         weights_map = disp - disp.min()
-        weights_map = (
-            1.414
-        ) ** weights_map  # using 1.414 instead of EXP for avoding numerical overflow.
+        weights_map = (1.414) ** weights_map
         flow = -disp.squeeze(1)
         dummy_flow = torch.zeros_like(flow, requires_grad=False)
         flow = torch.stack((flow, dummy_flow), dim=-1)
         res_accum = self.fw(im * weights_map, flow)
-        # mask = self.fw(weights_map, flow.detach())
         mask = self.fw(weights_map, flow)
         mask.clamp_(min=self.eps)
         res = res_accum / mask
         if not self.occlu_map:
             return res
-        else:
-            ones = torch.ones_like(disp, requires_grad=False)
-            occlu_map = self.fw(ones, flow)
-            occlu_map.clamp_(0.0, 1.0)
-            occlu_map = 1.0 - occlu_map
-            return res, occlu_map
-        
+        ones = torch.ones_like(disp, requires_grad=False)
+        occlu_map = self.fw(ones, flow)
+        occlu_map.clamp_(0.0, 1.0)
+        occlu_map = 1.0 - occlu_map
+        return res, occlu_map
+
 
 def DepthSplatting(
-        input_video_path, 
-        output_video_path, 
-        video_depth, 
-        depth_vis, 
-        max_disp, 
-        process_length, 
-        batch_size):
-    '''
-    Depth-Based Video Splatting Using the Video Depth.
-    Args:
-        input_video_path: Path to the input video.
-        output_video_path: Path to the output video.
-        video_depth: Video depth with shape of [T, H, W] in [0, 1].
-        depth_vis: Visualized video depth with shape of [T, H, W, 3] in [0, 1].
-        process_length: The length of video to process.
-        batch_size: The batch size for splatting to save GPU memory. 
-    '''
+    input_video_path,
+    output_video_path,
+    video_depth,
+    depth_vis,
+    process_length,
+    batch_size,
+    *,
+    use_metric_depth: bool = True,
+    focal_length_px: Optional[float] = None,
+    horizontal_fov_deg: Optional[float] = None,
+    baseline_m: Optional[float] = None,
+    min_depth_m: float = 1e-3,
+    max_disp_px: Optional[float] = None,
+    # legacy normalized depth: depth in [0,1], disparity = (2*d-1)*max_disp_norm
+    max_disp_norm: float = 20.0,
+):
+    """
+    Depth-based splatting to synthesize a right view.
+
+    Metric mode (use_metric_depth=True):
+        video_depth: [T,H,W] depth in meters (approx.).
+        disparity (pixels) = focal_length_px * baseline_m / max(Z, min_depth_m).
+        Provide focal_length_px **or** horizontal_fov_deg (f derived from frame width).
+
+    Legacy mode (use_metric_depth=False):
+        video_depth: [T,H,W] in [0, 1]; disp = (depth*2 - 1) * max_disp_norm.
+    """
     vid_reader = VideoReader(input_video_path, ctx=cpu(0))
     original_fps = vid_reader.get_avg_fps()
 
@@ -227,25 +178,40 @@ def DepthSplatting(
     first_frame = vid_reader[0].asnumpy()
     height, width, _ = first_frame.shape
 
-    # Initialize OpenCV VideoWriter
+    if use_metric_depth:
+        if baseline_m is None or baseline_m <= 0:
+            raise ValueError("metric splatting requires baseline_m > 0 (meters)")
+        if focal_length_px is not None and focal_length_px > 0:
+            f_px = float(focal_length_px)
+        elif horizontal_fov_deg is not None and horizontal_fov_deg > 0:
+            f_px = (width * 0.5) / np.tan(np.deg2rad(float(horizontal_fov_deg) * 0.5))
+        else:
+            raise ValueError("metric splatting requires focal_length_px > 0 or horizontal_fov_deg > 0")
+
     out = cv2.VideoWriter(
         output_video_path,
         cv2.VideoWriter_fourcc(*"mp4v"),
         original_fps,
-        (width * 2, height * 2)
+        (width * 2, height * 2),
     )
 
     for i in range(0, num_frames, batch_size):
         batch_indices = list(range(i, min(i + batch_size, num_frames)))
         batch_frames = vid_reader.get_batch(batch_indices).asnumpy() / 255.0
-        batch_depth = video_depth[i:i+batch_size]
-        batch_depth_vis = depth_vis[i:i+batch_size]
+        batch_depth = video_depth[i : i + batch_size]
+        batch_depth_vis = depth_vis[i : i + batch_size]
 
         left_video = torch.from_numpy(batch_frames).permute(0, 3, 1, 2).float().cuda()
         disp_map = torch.from_numpy(batch_depth).unsqueeze(1).float().cuda()
 
-        disp_map = disp_map * 2.0 - 1.0
-        disp_map = disp_map * max_disp
+        if use_metric_depth:
+            z = torch.clamp(disp_map, min=float(min_depth_m))
+            disp_map = (f_px * float(baseline_m)) / z
+            if max_disp_px is not None and max_disp_px > 0:
+                disp_map = torch.clamp(disp_map, max=float(max_disp_px))
+        else:
+            disp_map = disp_map * 2.0 - 1.0
+            disp_map = disp_map * float(max_disp_norm)
 
         with torch.no_grad():
             right_video, occlusion_mask = stereo_projector(left_video, disp_map)
@@ -262,7 +228,6 @@ def DepthSplatting(
             video_grid_bgr = cv2.cvtColor(video_grid_uint8, cv2.COLOR_RGB2BGR)
             out.write(video_grid_bgr)
 
-        # Free up GPU memory
         del left_video, disp_map, right_video, occlusion_mask
         torch.cuda.empty_cache()
         gc.collect()
@@ -273,31 +238,56 @@ def DepthSplatting(
 def main(
     input_video_path: str,
     output_video_path: str,
-    unet_path: str,
-    pre_trained_path: str,
-    max_disp: float = 20.0,
-    process_length = -1,
-    batch_size = 10
+    video_depth_checkpoint: str = "",
+    encoder: str = "vitl",
+    horizontal_fov_deg: float = 55.0,
+    focal_length_px: float = 0.0,
+    ipd_mm: float = 63.0,
+    max_disp_px: float = 500.0,
+    min_depth_m: float = 1e-3,
+    process_length: int = -1,
+    batch_size: int = 10,
+    max_res: int = 1024,
+    input_size: int = 518,
+    fp32: bool = False,
 ):
-    depthcrafter_demo = DepthCrafterDemo(
-        unet_path=unet_path,
-        pre_trained_path=pre_trained_path
+    ckpt = video_depth_checkpoint or os.environ.get(
+        "VIDEO_DEPTH_CHECKPOINT",
+        os.path.join(_REPO_ROOT, "weights", "metric_video_depth_anything_vitl.pth"),
     )
+    if not os.path.isfile(ckpt):
+        raise FileNotFoundError(
+            f"Metric Video Depth Anything weights not found: {ckpt}\n"
+            "Set VIDEO_DEPTH_CHECKPOINT or pass --video_depth_checkpoint. "
+            "See dependency/Video-Depth-Anything/get_weights.sh"
+        )
 
-    video_depth, depth_vis = depthcrafter_demo.infer(
+    demo = VideoDepthAnythingDemo(checkpoint_path=ckpt, encoder=encoder)
+    video_depth, depth_vis = demo.infer(
         input_video_path,
         output_video_path,
-        process_length
+        process_length=int(process_length),
+        max_res=int(max_res),
+        input_size=int(input_size),
+        fp32=bool(fp32),
     )
 
+    f_px = float(focal_length_px) if focal_length_px and focal_length_px > 0 else None
+    hfov = float(horizontal_fov_deg) if f_px is None else None
+
     DepthSplatting(
-        input_video_path, 
-        output_video_path, 
-        video_depth, 
+        input_video_path,
+        output_video_path,
+        video_depth,
         depth_vis,
-        max_disp,
-        process_length, 
-        batch_size
+        int(process_length),
+        int(batch_size),
+        use_metric_depth=True,
+        focal_length_px=f_px,
+        horizontal_fov_deg=hfov,
+        baseline_m=float(ipd_mm) * 1e-3,
+        min_depth_m=float(min_depth_m),
+        max_disp_px=float(max_disp_px) if max_disp_px and max_disp_px > 0 else None,
     )
 
 

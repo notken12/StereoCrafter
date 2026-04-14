@@ -46,7 +46,7 @@ You can use Anaconda or Docker to build this basic environment.
 
 #### 2. Clone the repo
 ```bash
-# use --recursive to clone the dependent submodules
+# use --recursive to clone dependent submodules (Forward-Warp, Video-Depth-Anything)
 git clone --recursive https://github.com/TencentARC/StereoCrafter
 cd StereoCrafter
 ```
@@ -77,10 +77,20 @@ git lfs install
 git clone https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1-1
 ```
 
-#### 2. Download the [DepthCrafter model](https://huggingface.co/tencent/DepthCrafter) for the video depth estimation.
+#### 2. Download **Metric Video Depth Anything** weights for depth (meters-scale, used for disparity `f·B/Z`).
+
+From the project root, either copy checkpoints into `./weights/` (recommended for StereoCrafter defaults) or use `dependency/Video-Depth-Anything/checkpoints/` and set `VIDEO_DEPTH_CHECKPOINT`.
+
 ```bash
-git clone https://huggingface.co/tencent/DepthCrafter
+mkdir -p weights
+# Large metric model (default encoder vitl)
+wget -O weights/metric_video_depth_anything_vitl.pth \
+  https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Large/resolve/main/metric_video_depth_anything_vitl.pth
 ```
+
+Smaller / other encoders: see [Video Depth Anything README](dependency/Video-Depth-Anything/README.md) or run `dependency/Video-Depth-Anything/get_weights.sh` (downloads into that repo’s `checkpoints/` folder).
+
+**Camera geometry:** splatting uses baseline `B = IPD_mm / 1000` and focal length from horizontal FOV (`f = (W/2) / tan(HFOV/2)`) or an explicit `focal_length_px` override — see the Gradio settings or `depth_splatting_inference.py` / `run_inference.sh` env vars (`HFOV_DEG`, `IPD_MM`, `MAX_DISP_PX`).
 
 #### 3. Download the [StereoCrafter model](https://huggingface.co/TencentARC/StereoCrafter) for the stereo video generation.
 ```bash
@@ -99,18 +109,22 @@ sh run_inference.sh
 
 There are two main steps in this script for generating stereo video.
 
-#### 1. Depth-Based Video Splatting Using the Video Depth from DepthCrafter
-Execute the following command:
+#### 1. Depth-Based Video Splatting (Metric Video Depth Anything)
+Execute the following command (see `python depth_splatting_inference.py --help` for all flags):
 ```bash
-python depth_splatting_inference.py --pre_trained_path [PATH] --unet_path [PATH]
-                                    --input_video_path [PATH] --output_video_path [PATH]
+python depth_splatting_inference.py \
+  --input_video_path [PATH] \
+  --output_video_path [PATH] \
+  --video_depth_checkpoint [PATH_TO_metric_video_depth_anything_vitl.pth]
 ```
-Arguments:
-- `--pre_trained_path`: Path to the SVD img2vid model weights (e.g., `./weights/stable-video-diffusion-img2vid-xt-1-1`).
-- `--unet_path`: Path to the DepthCrafter model weights (e.g., `./weights/DepthCrafter`).
-- `--input_video_path`: Path to the input video (e.g., `./source_video/camel.mp4`).
-- `--output_video_path`: Path to the output video (e.g., `./outputs/camel_splatting_results.mp4`).
-- `--max_disp`: Parameter controlling the maximum disparity between the generated right video and the input left video. Default value is `20` pixels.
+Arguments (selected):
+- `--video_depth_checkpoint`: Metric VDA weights (default: `./weights/metric_video_depth_anything_vitl.pth` or env `VIDEO_DEPTH_CHECKPOINT`).
+- `--encoder`: `vits`, `vitb`, or `vitl` (must match the checkpoint).
+- `--horizontal_fov_deg` / `--focal_length_px`: Camera focal length for `disp = f·B/Z` (if `focal_length_px` > 0, HFOV is ignored).
+- `--ipd_mm`: Interpupillary distance in millimeters (baseline `B` in meters).
+- `--max_disp_px`: Optional upper clamp on disparity in pixels (stability).
+- `--input_video_path`: Input video (e.g., `./source_video/camel.mp4`).
+- `--output_video_path`: Splatting grid output (e.g., `./outputs/camel_splatting_results.mp4`).
 
 The first step generates a video grid with input video, visualized depth map, occlusion mask, and splatting right video, as shown below:
 
@@ -139,7 +153,7 @@ The stereo video inpainting generates the stereo video result in side-by-side fo
 
 We would like to express our gratitude to the following open-source projects:
 - [Stable Video Diffusion](https://github.com/Stability-AI/generative-models): A latent diffusion model trained to generate video clips from an image or text conditioning.
-- [DepthCrafter](https://github.com/Tencent/DepthCrafter): A novel method to generate temporally consistent depth sequences from videos.
+- [Video Depth Anything](https://github.com/DepthAnything/Video-Depth-Anything): Consistent video depth; **Metric** checkpoints enable physically motivated disparity for splatting.
 
 
 ## 📚 Citation

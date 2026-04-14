@@ -7,7 +7,6 @@ From: stereocrafter-base.sif
     export PYTHONPATH=/app
 
 %files
-    dependency/DepthCrafter /app/dependency/DepthCrafter
     dependency/Video-Depth-Anything /app/dependency/Video-Depth-Anything
     depth_splatting_inference.py /app/depth_splatting_inference.py
     inpainting_inference.py /app/inpainting_inference.py
@@ -17,7 +16,6 @@ From: stereocrafter-base.sif
 
 %post
     pip install --no-cache-dir -r /app/frontend/requirements.txt
-    pip install -r /app/dependency/Video-Depth-Anything/requirements.txt
 
 %runscript
     if [ $# -eq 0 ]; then
