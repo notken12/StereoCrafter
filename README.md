@@ -85,16 +85,21 @@ git clone https://huggingface.co/stabilityai/stable-video-diffusion-img2vid-xt-1
 
 #### 2. Download **Metric Video Depth Anything** weights for depth (meters-scale, used for disparity `f·B/Z`).
 
-From the project root, either copy checkpoints into `./weights/` (recommended for StereoCrafter defaults) or use `dependency/Video-Depth-Anything/checkpoints/` and set `VIDEO_DEPTH_CHECKPOINT`.
+StereoCrafter expects checkpoints under **`dependency/Video-Depth-Anything/checkpoints/`** (same layout as upstream VDA). From the project root:
 
 ```bash
-mkdir -p weights
-# Large metric model (default encoder vitl)
-wget -O weights/metric_video_depth_anything_vitl.pth \
+(cd dependency/Video-Depth-Anything && bash get_weights.sh)
+```
+
+Or fetch only the large metric model (default encoder `vitl`):
+
+```bash
+mkdir -p dependency/Video-Depth-Anything/checkpoints
+wget -O dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth \
   https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Large/resolve/main/metric_video_depth_anything_vitl.pth
 ```
 
-Smaller / other encoders: see [Video Depth Anything README](dependency/Video-Depth-Anything/README.md) or run `dependency/Video-Depth-Anything/get_weights.sh` (downloads into that repo’s `checkpoints/` folder).
+Override the path with env **`VIDEO_DEPTH_CHECKPOINT`** if needed. Other encoders: [Video Depth Anything README](dependency/Video-Depth-Anything/README.md).
 
 **Camera geometry:** splatting uses baseline `B = IPD_mm / 1000` and focal length from horizontal FOV (`f = (W/2) / tan(HFOV/2)`) or an explicit `focal_length_px` override — see the Gradio settings or `depth_splatting_inference.py` / `run_inference.sh` env vars (`HFOV_DEG`, `IPD_MM`, `MAX_DISP_PX`).
 
@@ -124,7 +129,7 @@ python depth_splatting_inference.py \
   --video_depth_checkpoint [PATH_TO_metric_video_depth_anything_vitl.pth]
 ```
 Arguments (selected):
-- `--video_depth_checkpoint`: Metric VDA weights (default: `./weights/metric_video_depth_anything_vitl.pth` or env `VIDEO_DEPTH_CHECKPOINT`).
+- `--video_depth_checkpoint`: Metric VDA weights (default: `dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth` or env `VIDEO_DEPTH_CHECKPOINT`).
 - `--encoder`: `vits`, `vitb`, or `vitl` (must match the checkpoint).
 - `--horizontal_fov_deg` / `--focal_length_px`: Camera focal length for `disp = f·B/Z` (if `focal_length_px` > 0, HFOV is ignored).
 - `--ipd_mm`: Interpupillary distance in millimeters (baseline `B` in meters).

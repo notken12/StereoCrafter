@@ -14,6 +14,7 @@ from decord import VideoReader, cpu
 
 _REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 _VDA_ROOT = os.path.join(_REPO_ROOT, "dependency", "Video-Depth-Anything")
+_VDA_CHECKPOINTS = os.path.join(_VDA_ROOT, "checkpoints")
 if _VDA_ROOT not in sys.path:
     sys.path.insert(0, _VDA_ROOT)
 
@@ -253,13 +254,13 @@ def main(
 ):
     ckpt = video_depth_checkpoint or os.environ.get(
         "VIDEO_DEPTH_CHECKPOINT",
-        os.path.join(_REPO_ROOT, "weights", "metric_video_depth_anything_vitl.pth"),
+        os.path.join(_VDA_CHECKPOINTS, "metric_video_depth_anything_vitl.pth"),
     )
     if not os.path.isfile(ckpt):
         raise FileNotFoundError(
             f"Metric Video Depth Anything weights not found: {ckpt}\n"
             "Set VIDEO_DEPTH_CHECKPOINT or pass --video_depth_checkpoint. "
-            "See dependency/Video-Depth-Anything/get_weights.sh"
+            "Default: dependency/Video-Depth-Anything/checkpoints/ (run get_weights.sh there)."
         )
 
     demo = VideoDepthAnythingDemo(checkpoint_path=ckpt, encoder=encoder)

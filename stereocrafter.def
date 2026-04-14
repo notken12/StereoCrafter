@@ -5,6 +5,8 @@ From: stereocrafter-base.sif
     export DEBIAN_FRONTEND=noninteractive
     export PYTHONUNBUFFERED=1
     export PYTHONPATH=/app
+    # Defaults when running inside the container (override with bind mounts or env).
+    export VIDEO_DEPTH_CHECKPOINT=/app/dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth
 
 %files
     dependency/Video-Depth-Anything /app/dependency/Video-Depth-Anything
@@ -16,6 +18,15 @@ From: stereocrafter-base.sif
 
 %post
     pip install --no-cache-dir -r /app/frontend/requirements.txt
+
+    mkdir -p /app/dependency/Video-Depth-Anything/checkpoints
+    METRIC_URL="https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Large/resolve/main/metric_video_depth_anything_vitl.pth"
+    METRIC_DST="/app/dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth"
+    if [ ! -f "${METRIC_DST}" ]; then
+        echo "Downloading Metric Video Depth Anything (ViT-L) checkpoint..."
+        wget -q --show-progress -O "${METRIC_DST}" "${METRIC_URL}" \
+            || curl -fsSL -o "${METRIC_DST}" "${METRIC_URL}"
+    fi
 
 %runscript
     if [ $# -eq 0 ]; then

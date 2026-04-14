@@ -9,7 +9,7 @@ INPUT_DIR="${INPUT_DIR:-${ROOT}/source_video}"
 OUTPUT_DIR="${OUTPUT_DIR:-${ROOT}/outputs}"
 
 PRE_TRAINED_PATH="${WEIGHTS_DIR}/stable-video-diffusion-img2vid-xt-1-1"
-VIDEO_DEPTH_CHECKPOINT="${VIDEO_DEPTH_CHECKPOINT:-${WEIGHTS_DIR}/metric_video_depth_anything_vitl.pth}"
+VIDEO_DEPTH_CHECKPOINT="${VIDEO_DEPTH_CHECKPOINT:-${ROOT}/dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth}"
 STEREOCRAFTER_UNET="${WEIGHTS_DIR}/StereoCrafter"
 
 TILE_NUM="${TILE_NUM:-2}"

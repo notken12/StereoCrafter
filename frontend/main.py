@@ -17,6 +17,9 @@ from pipelines.stereo_video_inpainting import (
 from inpainting_inference import spatial_tiled_process, write_video_opencv
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_VDA_CHECKPOINTS = os.path.join(
+    _REPO_ROOT, "dependency", "Video-Depth-Anything", "checkpoints"
+)
 
 PRE_TRAINED_PATH = os.environ.get(
     "PRE_TRAINED_PATH", "./weights/stable-video-diffusion-img2vid-xt-1-1"
@@ -24,7 +27,7 @@ PRE_TRAINED_PATH = os.environ.get(
 STEREOCRAFTER_PATH = os.environ.get("STEREOCRAFTER_PATH", "./weights/StereoCrafter")
 VIDEO_DEPTH_CHECKPOINT = os.environ.get(
     "VIDEO_DEPTH_CHECKPOINT",
-    os.path.join(_REPO_ROOT, "weights", "metric_video_depth_anything_vitl.pth"),
+    os.path.join(_VDA_CHECKPOINTS, "metric_video_depth_anything_vitl.pth"),
 )
 VIDEO_DEPTH_ENCODER = os.environ.get("VIDEO_DEPTH_ENCODER", "vitl")
 OUTPUT_DIR = os.environ.get("OUTPUT_DIR", "./outputs")
@@ -37,8 +40,12 @@ def load_models():
     if not os.path.isfile(VIDEO_DEPTH_CHECKPOINT):
         raise FileNotFoundError(
             f"Missing depth weights: {VIDEO_DEPTH_CHECKPOINT}\n"
-            "Download metric_video_depth_anything_*.pth (see dependency/Video-Depth-Anything/get_weights.sh) "
-            "or set VIDEO_DEPTH_CHECKPOINT."
+            "Download the metric checkpoint into dependency/Video-Depth-Anything/checkpoints (same as upstream VDA), e.g.:\n"
+            "  (cd dependency/Video-Depth-Anything && bash get_weights.sh)\n"
+            " # or: wget -O dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth \\\n"
+            "  # https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Large/resolve/main/metric_video_depth_anything_vitl.pth\n"
+            "Or set VIDEO_DEPTH_CHECKPOINT to an existing .pth path. "
+            "The Apptainer app image downloads into that checkpoints directory during build."
         )
     depth_model = VideoDepthAnythingDemo(
         checkpoint_path=VIDEO_DEPTH_CHECKPOINT,
