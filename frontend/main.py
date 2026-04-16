@@ -2,6 +2,7 @@ import gc
 import os
 import uuid
 
+import cv2
 import numpy as np
 import torch
 import gradio as gr
@@ -9,12 +10,15 @@ from decord import VideoReader, cpu
 from transformers import CLIPVisionModelWithProjection
 from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionModel
 
-from depth_splatting_inference import VideoDepthAnythingDemo, DepthSplatting
+from depth_splatting_inference import (
+    VideoDepthAnythingStreamingDemo,
+    DepthSplatting,
+)
 from pipelines.stereo_video_inpainting import (
     StableVideoDiffusionInpaintingPipeline,
     tensor2vid,
 )
-from inpainting_inference import spatial_tiled_process, write_video_opencv
+from inpainting_inference import spatial_tiled_process
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _VDA_CHECKPOINTS = os.path.join(
@@ -36,7 +40,7 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def load_models():
-    print("Loading Metric Video Depth Anything...")
+    print("Loading Metric Video Depth Anything (streaming)...")
     if not os.path.isfile(VIDEO_DEPTH_CHECKPOINT):
         raise FileNotFoundError(
             f"Missing depth weights: {VIDEO_DEPTH_CHECKPOINT}\n"
@@ -47,7 +51,7 @@ def load_models():
             "Or set VIDEO_DEPTH_CHECKPOINT to an existing .pth path. "
             "The Apptainer app image downloads into that checkpoints directory during build."
         )
-    depth_model = VideoDepthAnythingDemo(
+    depth_model = VideoDepthAnythingStreamingDemo(
         checkpoint_path=VIDEO_DEPTH_CHECKPOINT,
         encoder=VIDEO_DEPTH_ENCODER,
     )
@@ -114,68 +118,87 @@ def process_single_video(
     hfov = float(horizontal_fov_deg) if f_px is None else None
     clamp_px = float(max_disp_px) if max_disp_px > 0 else None
 
-    p(0.0, f"[{stem}] Estimating metric depth...")
-    video_depth, depth_vis = depth_model.infer(
+    mmap_path = os.path.splitext(splatting_path)[0] + ".depth.mmap"
+    p(0.0, f"[{stem}] Estimating metric depth (streaming VDA)...")
+    depth_mm, depth_bounds, depth_fidx = depth_model.infer_streaming(
         input_video_path=input_video,
-        output_video_path=splatting_path,
+        memmap_path=mmap_path,
         process_length=int(process_length),
         max_res=int(max_res),
     )
 
-    p(0.35, f"[{stem}] Splatting to right view (disp = f*B/Z)...")
-    DepthSplatting(
-        input_video_path=input_video,
-        output_video_path=splatting_path,
-        video_depth=video_depth,
-        depth_vis=depth_vis,
-        process_length=int(process_length),
-        batch_size=10,
-        use_metric_depth=True,
-        focal_length_px=f_px,
-        horizontal_fov_deg=hfov,
-        baseline_m=baseline_m,
-        min_depth_m=1e-3,
-        max_disp_px=clamp_px,
-    )
+    try:
+        p(0.35, f"[{stem}] Splatting to right view (disp = f*B/Z)...")
+        DepthSplatting(
+            input_video_path=input_video,
+            output_video_path=splatting_path,
+            video_depth=depth_mm,
+            depth_vis=None,
+            process_length=int(process_length),
+            batch_size=10,
+            use_metric_depth=True,
+            focal_length_px=f_px,
+            horizontal_fov_deg=hfov,
+            baseline_m=baseline_m,
+            min_depth_m=1e-3,
+            max_disp_px=clamp_px,
+            depth_vis_bounds=depth_bounds,
+            depth_frame_indices=depth_fidx,
+        )
+    finally:
+        del depth_mm
+        gc.collect()
+        try:
+            os.unlink(mmap_path)
+        except OSError:
+            pass
 
-    p(0.5, f"[{stem}] Running stereo inpainting...")
+    p(0.5, f"[{stem}] Running stereo inpainting (chunked)...")
     frames_chunk = 23
     overlap = 3
 
     video_reader = VideoReader(splatting_path, ctx=cpu(0))
     fps = video_reader.get_avg_fps()
-    frames = video_reader.get_batch(list(range(len(video_reader))))
     num_frames = len(video_reader)
 
-    frames = torch.tensor(frames.asnumpy()).permute(0, 3, 1, 2).float()
+    f0 = video_reader[0].asnumpy()
+    height_full, width_full = f0.shape[0] // 2, f0.shape[1] // 2
+    h128 = height_full // 128 * 128
+    w128 = width_full // 128 * 128
 
-    height, width = frames.shape[2] // 2, frames.shape[3] // 2
-    frames_left = frames[:, :, :height, :width]
-    frames_mask = frames[:, :, height:, :width]
-    frames_warpped = frames[:, :, height:, width:]
-    frames = torch.cat([frames_warpped, frames_left, frames_mask], dim=0)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out_sbs = cv2.VideoWriter(sbs_path, fourcc, fps, (w128 * 2, h128))
+    out_ana = cv2.VideoWriter(anaglyph_path, fourcc, fps, (w128, h128))
 
-    height = height // 128 * 128
-    width = width // 128 * 128
-    frames = frames[:, :, :height, :width] / 255.0
-    frames_warpped, frames_left, frames_mask = torch.chunk(frames, chunks=3, dim=0)
-    frames_mask = frames_mask.mean(dim=1, keepdim=True)
-
-    results = []
     generated = None
     for i in range(0, num_frames, frames_chunk - overlap):
-        if i + overlap >= frames_warpped.shape[0]:
+        if i + overlap >= num_frames:
             break
 
-        if generated is not None and i + frames_chunk > frames_warpped.shape[0]:
-            cur_i = max(frames_warpped.shape[0] + overlap - frames_chunk, 0)
+        if generated is not None and i + frames_chunk > num_frames:
+            cur_i = max(num_frames + overlap - frames_chunk, 0)
             cur_overlap = i - cur_i + overlap
         else:
             cur_i = i
             cur_overlap = overlap
 
-        input_frames_i = frames_warpped[cur_i : cur_i + frames_chunk].clone()
-        mask_frames_i = frames_mask[cur_i : cur_i + frames_chunk]
+        end_i = min(cur_i + frames_chunk, num_frames)
+        idx_list = list(range(cur_i, end_i))
+        chunk = video_reader.get_batch(idx_list).asnumpy()
+        frames = torch.from_numpy(chunk).permute(0, 3, 1, 2).float()
+
+        height, width = frames.shape[2] // 2, frames.shape[3] // 2
+        frames_left = frames[:, :, :height, :width]
+        frames_mask = frames[:, :, height:, :width]
+        frames_warpped = frames[:, :, height:, width:]
+        frames = torch.cat([frames_warpped, frames_left, frames_mask], dim=0)
+
+        frames = frames[:, :, :h128, :w128] / 255.0
+        frames_warpped, frames_left, frames_mask = torch.chunk(frames, chunks=3, dim=0)
+        frames_mask = frames_mask.mean(dim=1, keepdim=True)
+
+        input_frames_i = frames_warpped.clone()
+        mask_frames_i = frames_mask
 
         if generated is not None:
             try:
@@ -211,24 +234,26 @@ def process_single_video(
         ]
 
         generated = torch.stack(video_frames)
+        start_left = cur_overlap if i != 0 else 0
         if i != 0:
             generated = generated[cur_overlap:]
-        results.append(generated)
+        left_write = frames_left[start_left : start_left + generated.shape[0]]
+
+        for k in range(generated.shape[0]):
+            fl = (left_write[k] * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
+            fr = (generated[k] * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
+            sbs = np.concatenate([fl, fr], axis=1)
+            out_sbs.write(cv2.cvtColor(sbs, cv2.COLOR_RGB2BGR))
+            al = fl.copy()
+            al[:, :, 1:] = 0
+            ar = fr.copy()
+            ar[:, :, 0] = 0
+            out_ana.write(cv2.cvtColor(al + ar, cv2.COLOR_RGB2BGR))
 
         p(0.5 + 0.45 * (i / num_frames), f"[{stem}] Running stereo inpainting...")
 
-    frames_output = torch.cat(results, dim=0).cpu()
-
-    frames_sbs = torch.cat([frames_left, frames_output], dim=3)
-    frames_sbs = (frames_sbs * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).numpy()
-    write_video_opencv(frames_sbs, fps, sbs_path)
-
-    vid_left = (frames_left * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).numpy()
-    vid_right = (frames_output * 255).permute(0, 2, 3, 1).to(dtype=torch.uint8).numpy()
-    vid_left[:, :, :, 1] = 0
-    vid_left[:, :, :, 2] = 0
-    vid_right[:, :, :, 0] = 0
-    write_video_opencv(vid_left + vid_right, fps, anaglyph_path)
+    out_sbs.release()
+    out_ana.release()
 
     gc.collect()
     torch.cuda.empty_cache()
@@ -301,7 +326,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
         """
         # StereoCrafter
         Convert monocular video to immersive stereoscopic 3D.
-        Depth uses **Metric Video Depth Anything**; splatting disparity is **f·B / Z** (focal × baseline / depth).
+        Depth uses **Metric Video Depth Anything (streaming)**; splatting disparity is **f·B / Z**. Inpainting reads the splatting video in **chunks** and writes SBS/anaglyph incrementally to save RAM.
         """
     )
 
