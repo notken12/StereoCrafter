@@ -332,7 +332,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                 focal_length_px = gr.Slider(
                     label="Focal length override (px, 0 = use HFOV)",
                     minimum=0.0,
-                    maximum=4000.0,
+                    maximum=200000.0,
                     value=0.0,
                     step=1.0,
                     info="If > 0, use this fx in pixels instead of HFOV.",
