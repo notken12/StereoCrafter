@@ -92,21 +92,6 @@ def load_models():
 depth_model, inpainting_pipeline = load_models()
 
 
-def _effective_process_length(
-    process_length: int, fast_preview: bool, preview_max_frames: int
-) -> int:
-    """When fast preview is on and preview_max_frames > 0, cap depth/splat length."""
-    pl = int(process_length)
-    if not fast_preview:
-        return pl
-    cap = int(preview_max_frames)
-    if cap <= 0:
-        return pl
-    if pl < 0:
-        return cap
-    return min(pl, cap)
-
-
 def process_single_video(
     input_video: str,
     ipd_mm: float,
@@ -118,7 +103,7 @@ def process_single_video(
     max_res: int,
     fast_preview: bool,
     stereo_scale: float,
-    preview_max_frames: int,
+    preview_speedup: float,
     progress_offset: float,
     progress_scale: float,
     progress,
@@ -136,17 +121,17 @@ def process_single_video(
     f_px = float(focal_length_px) if focal_length_px > 0 else None
     hfov = float(horizontal_fov_deg) if f_px is None else None
     clamp_px = float(max_disp_px) if max_disp_px > 0 else None
-    eff_len = _effective_process_length(
-        int(process_length), bool(fast_preview), int(preview_max_frames)
-    )
+    pl = int(process_length)
+    su = max(1.0, float(preview_speedup)) if fast_preview else 1.0
 
     mmap_path = os.path.splitext(splatting_path)[0] + ".depth.mmap"
     p(0.0, f"[{stem}] Estimating metric depth (streaming VDA)...")
     depth_mm, depth_bounds, depth_fidx = depth_model.infer_streaming(
         input_video_path=input_video,
         memmap_path=mmap_path,
-        process_length=int(eff_len),
+        process_length=int(pl),
         max_res=int(max_res),
+        speedup_rate=float(su),
     )
 
     try:
@@ -156,7 +141,7 @@ def process_single_video(
             output_video_path=splatting_path,
             video_depth=depth_mm,
             depth_vis=None,
-            process_length=int(eff_len),
+            process_length=int(pl),
             batch_size=10,
             use_metric_depth=True,
             focal_length_px=f_px,
@@ -302,7 +287,7 @@ def run_inference(
     max_res: int,
     fast_preview: bool,
     stereo_scale: float,
-    preview_max_frames: int,
+    preview_speedup: float,
     progress=gr.Progress(track_tqdm=True),
 ):
     if not input_files:
@@ -324,7 +309,7 @@ def run_inference(
             max_res=int(max_res),
             fast_preview=bool(fast_preview),
             stereo_scale=float(stereo_scale),
-            preview_max_frames=int(preview_max_frames),
+            preview_speedup=float(preview_speedup),
             progress_offset=idx / n,
             progress_scale=1.0 / n,
             progress=progress,
@@ -362,7 +347,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
         """
         # StereoCrafter
         Convert monocular video to immersive stereoscopic 3D.
-        Depth uses **Metric Video Depth Anything (streaming)**; splatting uses **stereo_scale × f·B / Z**. Use **Fast preview** to skip diffusion and cap frames for a quick parallax check; tune **Stereo scale** if metric depth is off.
+        Depth uses **Metric Video Depth Anything (streaming)**; splatting uses **stereo_scale × f·B / Z**. Use **Fast preview** to skip diffusion and subsample frames in order across the whole **Process length** (see **Preview speedup**); tune **Stereo scale** if metric depth is off.
         """
     )
 
@@ -435,13 +420,13 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=False,
                     info="Skips StereoCrafter diffusion; SBS/anaglyph are raw splat-only (fast). Use to tune stereo_scale and camera settings.",
                 )
-                preview_max_frames = gr.Slider(
-                    label="Preview frame cap (fast preview only)",
-                    minimum=0,
-                    maximum=300,
-                    value=96,
-                    step=1,
-                    info="0 = use Process length. When Fast preview is on and this > 0, limits depth+splat frames (e.g. about 4s at 24fps when set to 96).",
+                preview_speedup = gr.Slider(
+                    label="Preview speedup (fast preview only)",
+                    minimum=1.0,
+                    maximum=16.0,
+                    value=4.0,
+                    step=0.5,
+                    info="1 = every frame (slow). Higher = every ~N-th source frame in order, full timeline when Process length is -1; output keeps source FPS so playback is N× shorter/faster.",
                 )
                 stereo_scale = gr.Slider(
                     label="Stereo scale",
@@ -489,7 +474,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
             max_res,
             fast_preview,
             stereo_scale,
-            preview_max_frames,
+            preview_speedup,
         ],
         outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
     ).then(

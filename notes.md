@@ -86,7 +86,7 @@ The **processing pipeline** is monocular video → **streaming Metric Video Dept
 
 - **Depth model:** **Metric Video Depth Anything** via **`video_depth_anything.video_depth_stream`** (streaming), not the offline `video_depth.py` path. Wrapper: **`VideoDepthAnythingStreamingDemo`** in [`depth_splatting_inference.py`](depth_splatting_inference.py). **`reset_streaming()`** state must be fresh per video (handled inside `infer_streaming`).
 - **Depth on disk:** Streaming writes **`float32` depths** to a temporary **`.depth.mmap`** (`(T, H, W)`), then **`DepthSplatting`** reads slices. File is **unlinked** after splatting in the frontend/CLI unless you comment that out for debugging.
-- **Frame alignment:** `read_video_frames` uses **FPS stride**; depth row `t` corresponds to **source frame index** `depth_frame_indices[t]`, **not** always `t`. **`DepthSplatting`** must get **`depth_frame_indices`** from `infer_streaming` or splatting reads the wrong video frames vs depth.
+- **Frame alignment:** `read_video_frames` (batch path) uses **FPS stride**; streaming **`infer_streaming`** builds a strided index list (`range(0, len(vid), stride)`). Depth row `t` corresponds to **source frame index** `depth_frame_indices[t]`, **not** always `t`. **`DepthSplatting`** must get **`depth_frame_indices`** from `infer_streaming` or splatting reads the wrong video frames vs depth. **`speedup_rate > 1`** in **`infer_streaming`** sets **`stride = max(1, int(round(speedup_rate)))`** (overrides **`target_fps`** for stride); **`speedup_rate == 1`** keeps the **`target_fps`**-based stride. CLI **`depth_splatting_inference.py`** exposes **`--speedup_rate`**.
 - **Disparity:** `disp = stereo_scale * f_x * B / clamp(Z, min_depth)` (meters for `B` and `Z`; `f_x` in pixels). **`stereo_scale`** is a UI/CLI knob to compensate for bad metric scale without retraining.
 - **HFOV → f:** `f_x = (width/2) / tan(HFOV/2)` using **full-frame pixel width** from the **source** video (first frame of the batch path). Wrong HFOV directly scales disparity.
 
@@ -94,7 +94,7 @@ The **processing pipeline** is monocular video → **streaming Metric Video Dept
 
 - **Full pipeline:** Chunked **diffusion inpainting** in [`frontend/main.py`](frontend/main.py) reads the **splatting MP4** in **temporal chunks** (does **not** load all frames at once).
 - **Fast preview:** Checkbox skips inpainting; **`write_preview_sbs_from_splatting`** stitches **top-left** (left eye) and **bottom-right** (warped right) of the **2×2 splatting grid**. Holes/disocclusions are **expected**; diffusion normally fills them.
-- **Preview frame cap:** When fast preview is on, **`_effective_process_length`** caps **`T`** for depth+splat only.
+- **Preview speedup (fast preview only):** Gradio **`Preview speedup`** passes **`speedup_rate`** into **`infer_streaming`**. Values **> 1** subsample **every N-th source frame in order** with **`N = max(1, int(round(speedup_rate)))`**, so with **Process length = -1** the **whole timeline** is covered with fewer frames. Splatting still writes at the **source FPS**, so the preview MP4 is **shorter** and plays **faster** (~N×). Full runs (fast preview off) use **`speedup_rate = 1`**. **Process length** still limits how many **strided** frames depth+splat process (same semantics as before; **-1** = all strided frames through the clip).
 
 ## Weights paths
 
@@ -112,7 +112,7 @@ The **processing pipeline** is monocular video → **streaming Metric Video Dept
 
 ## CLI
 
-- **Splatting + depth:** `python depth_splatting_inference.py` (Fire). Flags include **`--stereo_scale`**. Uses streaming + memmap internally.
+- **Splatting + depth:** `python depth_splatting_inference.py` (Fire). Flags include **`--stereo_scale`**, **`--speedup_rate`** (default 1). Uses streaming + memmap internally.
 - **Batch stereo:** [`run_inference.sh`](run_inference.sh) — depth checkpoint default path uses **`$ROOT/dependency/Video-Depth-Anything/checkpoints/...`**.
 
 ## Memory / complexity gotchas

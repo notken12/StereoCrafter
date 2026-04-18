@@ -22,7 +22,10 @@ From: stereocrafter-base.sif
     mkdir -p /app/dependency/Video-Depth-Anything/checkpoints
     METRIC_URL="https://huggingface.co/depth-anything/Metric-Video-Depth-Anything-Large/resolve/main/metric_video_depth_anything_vitl.pth"
     METRIC_DST="/app/dependency/Video-Depth-Anything/checkpoints/metric_video_depth_anything_vitl.pth"
-    if [ ! -f "${METRIC_DST}" ]; then
+    # Skip download if already present (e.g. copied in via %files); -s rejects empty/partial files.
+    if [ -f "${METRIC_DST}" ] && [ -s "${METRIC_DST}" ]; then
+        echo "Metric Video Depth checkpoint already present at ${METRIC_DST}, skipping download."
+    else
         echo "Downloading Metric Video Depth Anything (ViT-L) checkpoint..."
         wget -q --show-progress -O "${METRIC_DST}" "${METRIC_URL}" \
             || curl -fsSL -o "${METRIC_DST}" "${METRIC_URL}"

@@ -153,6 +153,7 @@ class VideoDepthAnythingStreamingDemo:
         process_length: int = -1,
         max_res: int = 1024,
         target_fps: int = -1,
+        speedup_rate: float = 1.0,
         input_size: int = 518,
         fp32: bool = False,
     ) -> Tuple[np.memmap, Tuple[float, float], np.ndarray]:
@@ -160,6 +161,9 @@ class VideoDepthAnythingStreamingDemo:
         Stream frames through VDA; write depths to float32 memmap (T, orig_h, orig_w).
         Returns (memmap, (d_min, d_max), frames_idx) — memmap shape (T, oh, ow).
         Caller must delete memmap and unlink memmap_path when done.
+
+        speedup_rate (>1): take every ~N-th frame in order (N = round(speedup_rate)) so the full timeline is covered with fewer frames; output at source FPS plays N× faster.
+        When speedup_rate > 1, it overrides target_fps for stride selection.
         """
         self.reset_streaming()
         vid = VideoReader(input_video_path, ctx=cpu(0))
@@ -173,8 +177,12 @@ class VideoDepthAnythingStreamingDemo:
             inf_w = ensure_even(round(ow * scale))
 
         avg_fps = vid.get_avg_fps()
-        fps = avg_fps if target_fps == -1 else float(target_fps)
-        stride = max(round(avg_fps / fps), 1)
+        su = max(1.0, float(speedup_rate))
+        if su > 1.0:
+            stride = max(1, int(round(su)))
+        else:
+            fps = avg_fps if target_fps == -1 else float(target_fps)
+            stride = max(round(avg_fps / fps), 1)
         frames_idx = list(range(0, len(vid), stride))
         if process_length != -1 and process_length < len(frames_idx):
             frames_idx = frames_idx[: int(process_length)]
@@ -414,6 +422,7 @@ def main(
     input_size: int = 518,
     fp32: bool = False,
     stereo_scale: float = 1.0,
+    speedup_rate: float = 1.0,
 ):
     ckpt = video_depth_checkpoint or os.environ.get(
         "VIDEO_DEPTH_CHECKPOINT",
@@ -435,6 +444,7 @@ def main(
         max_res=int(max_res),
         input_size=int(input_size),
         fp32=bool(fp32),
+        speedup_rate=float(speedup_rate),
     )
 
     f_px = float(focal_length_px) if focal_length_px and focal_length_px > 0 else None
