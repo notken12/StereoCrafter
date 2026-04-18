@@ -257,6 +257,7 @@ def DepthSplatting(
     max_disp_px: Optional[float] = None,
     depth_vis_bounds: Optional[Tuple[float, float]] = None,
     depth_frame_indices: Optional[np.ndarray] = None,
+    stereo_scale: float = 1.0,
     # legacy normalized depth: depth in [0,1], disparity = (2*d-1)*max_disp_norm
     max_disp_norm: float = 20.0,
 ):
@@ -265,7 +266,8 @@ def DepthSplatting(
 
     Metric mode (use_metric_depth=True):
         video_depth: [T,H,W] depth in meters (approx.), ndarray or memmap.
-        disparity (pixels) = focal_length_px * baseline_m / max(Z, min_depth_m).
+        disparity (pixels) = stereo_scale * focal_length_px * baseline_m / max(Z, min_depth_m).
+        stereo_scale: multiply disparity after f*B/Z (same effect as dividing depth by this factor).
 
     depth_vis may be None if depth_vis_bounds is set (inferno vis computed per batch).
 
@@ -334,11 +336,13 @@ def DepthSplatting(
         if use_metric_depth:
             z = torch.clamp(disp_map, min=float(min_depth_m))
             disp_map = (f_px * float(baseline_m)) / z
+            disp_map = disp_map * float(stereo_scale)
             if max_disp_px is not None and max_disp_px > 0:
                 disp_map = torch.clamp(disp_map, max=float(max_disp_px))
         else:
             disp_map = disp_map * 2.0 - 1.0
             disp_map = disp_map * float(max_disp_norm)
+            disp_map = disp_map * float(stereo_scale)
 
         with torch.no_grad():
             right_video, occlusion_mask = stereo_projector(left_video, disp_map)
@@ -362,6 +366,38 @@ def DepthSplatting(
     out.release()
 
 
+def write_preview_sbs_from_splatting(
+    splatting_path: str,
+    sbs_path: str,
+    anaglyph_path: str,
+) -> None:
+    """
+    Build SBS + anaglyph from the 2x2 splatting grid (top-left = left, bottom-right = warped right).
+    No diffusion — fast preview of depth-based parallax only.
+    """
+    vr = VideoReader(splatting_path, ctx=cpu(0))
+    fps = vr.get_avg_fps()
+    f0 = vr[0].asnumpy()
+    h, w = f0.shape[0] // 2, f0.shape[1] // 2
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    out_sbs = cv2.VideoWriter(sbs_path, fourcc, fps, (w * 2, h))
+    out_ana = cv2.VideoWriter(anaglyph_path, fourcc, fps, (w, h))
+    for i in range(len(vr)):
+        frame = vr[i].asnumpy()
+        hh, ww = frame.shape[0] // 2, frame.shape[1] // 2
+        left = frame[:hh, :ww]
+        right = frame[hh:, ww:]
+        sbs = np.concatenate([left, right], axis=1)
+        out_sbs.write(cv2.cvtColor(sbs, cv2.COLOR_RGB2BGR))
+        al = left.copy()
+        al[:, :, 1:] = 0
+        ar = right.copy()
+        ar[:, :, 0] = 0
+        out_ana.write(cv2.cvtColor(al + ar, cv2.COLOR_RGB2BGR))
+    out_sbs.release()
+    out_ana.release()
+
+
 def main(
     input_video_path: str,
     output_video_path: str,
@@ -377,6 +413,7 @@ def main(
     max_res: int = 1024,
     input_size: int = 518,
     fp32: bool = False,
+    stereo_scale: float = 1.0,
 ):
     ckpt = video_depth_checkpoint or os.environ.get(
         "VIDEO_DEPTH_CHECKPOINT",
@@ -419,6 +456,7 @@ def main(
             max_disp_px=float(max_disp_px) if max_disp_px and max_disp_px > 0 else None,
             depth_vis_bounds=bounds,
             depth_frame_indices=fidx,
+            stereo_scale=float(stereo_scale),
         )
     finally:
         del depth_mm

@@ -13,6 +13,7 @@ from diffusers import AutoencoderKLTemporalDecoder, UNetSpatioTemporalConditionM
 from depth_splatting_inference import (
     VideoDepthAnythingStreamingDemo,
     DepthSplatting,
+    write_preview_sbs_from_splatting,
 )
 from pipelines.stereo_video_inpainting import (
     StableVideoDiffusionInpaintingPipeline,
@@ -91,6 +92,21 @@ def load_models():
 depth_model, inpainting_pipeline = load_models()
 
 
+def _effective_process_length(
+    process_length: int, fast_preview: bool, preview_max_frames: int
+) -> int:
+    """When fast preview is on and preview_max_frames > 0, cap depth/splat length."""
+    pl = int(process_length)
+    if not fast_preview:
+        return pl
+    cap = int(preview_max_frames)
+    if cap <= 0:
+        return pl
+    if pl < 0:
+        return cap
+    return min(pl, cap)
+
+
 def process_single_video(
     input_video: str,
     ipd_mm: float,
@@ -100,6 +116,9 @@ def process_single_video(
     process_length: int,
     tile_num: int,
     max_res: int,
+    fast_preview: bool,
+    stereo_scale: float,
+    preview_max_frames: int,
     progress_offset: float,
     progress_scale: float,
     progress,
@@ -117,24 +136,27 @@ def process_single_video(
     f_px = float(focal_length_px) if focal_length_px > 0 else None
     hfov = float(horizontal_fov_deg) if f_px is None else None
     clamp_px = float(max_disp_px) if max_disp_px > 0 else None
+    eff_len = _effective_process_length(
+        int(process_length), bool(fast_preview), int(preview_max_frames)
+    )
 
     mmap_path = os.path.splitext(splatting_path)[0] + ".depth.mmap"
     p(0.0, f"[{stem}] Estimating metric depth (streaming VDA)...")
     depth_mm, depth_bounds, depth_fidx = depth_model.infer_streaming(
         input_video_path=input_video,
         memmap_path=mmap_path,
-        process_length=int(process_length),
+        process_length=int(eff_len),
         max_res=int(max_res),
     )
 
     try:
-        p(0.35, f"[{stem}] Splatting to right view (disp = f*B/Z)...")
+        p(0.35, f"[{stem}] Splatting (disp = stereo_scale * f*B/Z)...")
         DepthSplatting(
             input_video_path=input_video,
             output_video_path=splatting_path,
             video_depth=depth_mm,
             depth_vis=None,
-            process_length=int(process_length),
+            process_length=int(eff_len),
             batch_size=10,
             use_metric_depth=True,
             focal_length_px=f_px,
@@ -144,6 +166,7 @@ def process_single_video(
             max_disp_px=clamp_px,
             depth_vis_bounds=depth_bounds,
             depth_frame_indices=depth_fidx,
+            stereo_scale=float(stereo_scale),
         )
     finally:
         del depth_mm
@@ -152,6 +175,13 @@ def process_single_video(
             os.unlink(mmap_path)
         except OSError:
             pass
+
+    if fast_preview:
+        p(0.5, f"[{stem}] Fast preview: SBS/anaglyph from splatting (skip diffusion)...")
+        write_preview_sbs_from_splatting(splatting_path, sbs_path, anaglyph_path)
+        gc.collect()
+        torch.cuda.empty_cache()
+        return sbs_path, anaglyph_path, splatting_path
 
     p(0.5, f"[{stem}] Running stereo inpainting (chunked)...")
     frames_chunk = 23
@@ -270,6 +300,9 @@ def run_inference(
     process_length: int,
     tile_num: int,
     max_res: int,
+    fast_preview: bool,
+    stereo_scale: float,
+    preview_max_frames: int,
     progress=gr.Progress(track_tqdm=True),
 ):
     if not input_files:
@@ -289,6 +322,9 @@ def run_inference(
             process_length=int(process_length),
             tile_num=int(tile_num),
             max_res=int(max_res),
+            fast_preview=bool(fast_preview),
+            stereo_scale=float(stereo_scale),
+            preview_max_frames=int(preview_max_frames),
             progress_offset=idx / n,
             progress_scale=1.0 / n,
             progress=progress,
@@ -326,7 +362,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
         """
         # StereoCrafter
         Convert monocular video to immersive stereoscopic 3D.
-        Depth uses **Metric Video Depth Anything (streaming)**; splatting disparity is **f·B / Z**. Inpainting reads the splatting video in **chunks** and writes SBS/anaglyph incrementally to save RAM.
+        Depth uses **Metric Video Depth Anything (streaming)**; splatting uses **stereo_scale × f·B / Z**. Use **Fast preview** to skip diffusion and cap frames for a quick parallax check; tune **Stereo scale** if metric depth is off.
         """
     )
 
@@ -394,6 +430,27 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     step=64,
                     info="Cap the longer edge for depth inference. Output splatting uses full-resolution video.",
                 )
+                fast_preview = gr.Checkbox(
+                    label="Fast preview (no inpainting)",
+                    value=False,
+                    info="Skips StereoCrafter diffusion; SBS/anaglyph are raw splat-only (fast). Use to tune stereo_scale and camera settings.",
+                )
+                preview_max_frames = gr.Slider(
+                    label="Preview frame cap (fast preview only)",
+                    minimum=0,
+                    maximum=300,
+                    value=96,
+                    step=1,
+                    info="0 = use Process length. When Fast preview is on and this > 0, limits depth+splat frames (e.g. about 4s at 24fps when set to 96).",
+                )
+                stereo_scale = gr.Slider(
+                    label="Stereo scale",
+                    minimum=0.25,
+                    maximum=4.0,
+                    value=1.0,
+                    step=0.05,
+                    info="Multiplies disparity after f·B/Z (>1 = stronger 3D, same as assuming predicted depth is too large).",
+                )
             run_btn = gr.Button("Generate Stereo Video", variant="primary")
 
         with gr.Column(scale=2):
@@ -430,6 +487,9 @@ with gr.Blocks(title="StereoCrafter") as demo:
             process_length,
             tile_num,
             max_res,
+            fast_preview,
+            stereo_scale,
+            preview_max_frames,
         ],
         outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
     ).then(
