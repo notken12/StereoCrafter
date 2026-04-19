@@ -162,7 +162,10 @@ def process_single_video(
             pass
 
     if fast_preview:
-        p(0.5, f"[{stem}] Fast preview: SBS/anaglyph from splatting (skip diffusion)...")
+        p(
+            0.5,
+            f"[{stem}] Fast preview: SBS/anaglyph from splatting (skip diffusion)...",
+        )
         write_preview_sbs_from_splatting(splatting_path, sbs_path, anaglyph_path)
         gc.collect()
         torch.cuda.empty_cache()
@@ -255,8 +258,17 @@ def process_single_video(
         left_write = frames_left[start_left : start_left + generated.shape[0]]
 
         for k in range(generated.shape[0]):
-            fl = (left_write[k] * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
-            fr = (generated[k] * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
+            fl = (
+                (left_write[k] * 255)
+                .clamp(0, 255)
+                .byte()
+                .permute(1, 2, 0)
+                .cpu()
+                .numpy()
+            )
+            fr = (
+                (generated[k] * 255).clamp(0, 255).byte().permute(1, 2, 0).cpu().numpy()
+            )
             sbs = np.concatenate([fl, fr], axis=1)
             out_sbs.write(cv2.cvtColor(sbs, cv2.COLOR_RGB2BGR))
             al = fl.copy()
@@ -424,7 +436,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     label="Processing speedup",
                     minimum=1.0,
                     maximum=16.0,
-                    value=4.0,
+                    value=1.0,
                     step=0.5,
                     info="1 = every source frame. Higher = every N-th frame in order for depth+splatting (full run or fast preview); splatting MP4 keeps source FPS so duration scales ~1/N. Full timeline when Process length is -1.",
                 )

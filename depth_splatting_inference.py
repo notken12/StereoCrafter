@@ -221,6 +221,11 @@ class VideoDepthAnythingStreamingDemo:
         return depth_mm, (float(d_min), float(d_max)), idx_arr
 
 
+# Upper bound on the exponent so (1.414)**exp stays finite; raw pixel disparity
+# range was unbounded and overflowed at large stereo_scale / high parallax.
+_SPLAT_WEIGHT_EXP_RANGE = 40.0
+
+
 class ForwardWarpStereo(nn.Module):
     def __init__(self, eps=1e-6, occlu_map=False):
         super(ForwardWarpStereo, self).__init__()
@@ -231,8 +236,16 @@ class ForwardWarpStereo(nn.Module):
     def forward(self, im, disp):
         im = im.contiguous()
         disp = disp.contiguous()
-        weights_map = disp - disp.min()
-        weights_map = (1.414) ** weights_map
+        # Per-frame disparity span → [0,1], then bounded exponential (matches upstream
+        # intent: favor larger disparity) without (1.414)**(hundreds of pixels) → inf.
+        b = disp.shape[0]
+        flat = disp.view(b, -1)
+        disp_min = flat.min(dim=1, keepdim=True).values.view(b, 1, 1, 1)
+        disp_max = flat.max(dim=1, keepdim=True).values.view(b, 1, 1, 1)
+        dr = disp - disp_min
+        span = (disp_max - disp_min).clamp(min=1e-6)
+        dr_norm = dr / span
+        weights_map = (1.414) ** (dr_norm * _SPLAT_WEIGHT_EXP_RANGE)
         flow = -disp.squeeze(1)
         dummy_flow = torch.zeros_like(flow, requires_grad=False)
         flow = torch.stack((flow, dummy_flow), dim=-1)
