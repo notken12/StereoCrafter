@@ -369,6 +369,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                 label="Input Videos",
                 file_count="multiple",
                 file_types=["video"],
+                aria_label="Upload input videos for stereoscopic conversion",
             )
             with gr.Accordion("Settings", open=True):
                 ipd_mm = gr.Slider(
@@ -378,6 +379,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=12.5,
                     step=0.1,
                     info="Real-world eye separation; sets stereo baseline B = IPD / 1000 in meters.",
+                    aria_label="Interpupillary distance in millimeters",
                 )
                 horizontal_fov_deg = gr.Slider(
                     label="Horizontal field of view (°)",
@@ -386,6 +388,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=55.0,
                     step=0.5,
                     info="Used to estimate focal length f from frame width: f = (W/2) / tan(HFOV/2). Ignored if focal length > 0.",
+                    aria_label="Horizontal field of view in degrees",
                 )
                 focal_length_px = gr.Slider(
                     label="Focal length override (px, 0 = use HFOV)",
@@ -394,6 +397,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=0.0,
                     step=1.0,
                     info="If > 0, use this fx in pixels instead of HFOV.",
+                    aria_label="Focal length override in pixels; zero uses horizontal field of view",
                 )
                 max_disp_px = gr.Slider(
                     label="Max disparity clamp (px)",
@@ -402,6 +406,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=500.0,
                     step=1.0,
                     info="Caps splatting disparity for stability (0 disables clamp).",
+                    aria_label="Maximum disparity clamp in pixels",
                 )
                 process_length = gr.Slider(
                     label="Process Length (frames)",
@@ -410,6 +415,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=-1,
                     step=1,
                     info="-1 processes the full video.",
+                    aria_label="Number of frames to process; negative one means full video",
                 )
                 tile_num = gr.Slider(
                     label="Tile Number",
@@ -418,6 +424,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=1,
                     step=1,
                     info="Increase for high-resolution video to reduce VRAM usage.",
+                    aria_label="Spatial tile count for inpainting to reduce VRAM",
                 )
                 max_res = gr.Slider(
                     label="Max Resolution",
@@ -426,11 +433,13 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=1024,
                     step=64,
                     info="Cap the longer edge for depth inference. Output splatting uses full-resolution video.",
+                    aria_label="Maximum resolution for depth inference longer edge",
                 )
                 fast_preview = gr.Checkbox(
                     label="Fast preview (no inpainting)",
                     value=False,
                     info="Skips StereoCrafter diffusion; SBS/anaglyph are raw splat-only (fast). Use to tune stereo_scale and camera settings.",
+                    aria_label="Fast preview without diffusion inpainting",
                 )
                 speedup_rate = gr.Slider(
                     label="Processing speedup",
@@ -439,6 +448,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=1.0,
                     step=0.5,
                     info="1 = every source frame. Higher = every N-th frame in order for depth+splatting (full run or fast preview); splatting MP4 keeps source FPS so duration scales ~1/N. Full timeline when Process length is -1.",
+                    aria_label="Depth and splatting frame subsampling speedup factor",
                 )
                 stereo_scale = gr.Slider(
                     label="Stereo scale",
@@ -447,29 +457,51 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=1.0,
                     step=0.05,
                     info="Multiplies disparity after f·B/Z (>1 = stronger 3D, same as assuming predicted depth is too large).",
+                    aria_label="Stereo disparity scale multiplier",
                 )
-            run_btn = gr.Button("Generate Stereo Video", variant="primary")
+            run_btn = gr.Button(
+                "Generate Stereo Video",
+                variant="primary",
+                aria_label="Generate stereoscopic video from uploaded inputs",
+            )
 
         with gr.Column(scale=2):
             gr.Markdown("#### Preview (last video)")
-            output_sbs = gr.Video(label="Side-by-Side", autoplay=True, loop=True)
+            output_sbs = gr.Video(
+                label="Side-by-Side",
+                autoplay=True,
+                loop=True,
+                aria_label="Preview side-by-side stereoscopic output video",
+            )
             output_anaglyph = gr.Video(
-                label="Anaglyph 3D (Red-Cyan glasses)", autoplay=True, loop=True
+                label="Anaglyph 3D (Red-Cyan glasses)",
+                autoplay=True,
+                loop=True,
+                aria_label="Preview anaglyph red-cyan stereoscopic output video",
             )
             with gr.Accordion("Intermediate Results", open=False):
                 output_splatting = gr.Video(
-                    label="Depth Splatting Grid", autoplay=True, loop=True
+                    label="Depth Splatting Grid",
+                    autoplay=True,
+                    loop=True,
+                    aria_label="Preview depth splatting grid intermediate video",
                 )
             gr.Markdown("#### Download All Outputs")
             output_files = gr.Files(
-                label="All output videos (SBS, anaglyph, splatting)"
+                label="All output videos (SBS, anaglyph, splatting)",
+                aria_label="Download all output videos: side-by-side, anaglyph, and splatting",
             )
 
     with gr.Accordion("Past Generations", open=False):
-        refresh_btn = gr.Button("Refresh", size="sm")
+        refresh_btn = gr.Button(
+            "Refresh",
+            size="sm",
+            aria_label="Refresh list of past generated output videos",
+        )
         past_files = gr.Files(
             label="All output videos",
             value=list_past_generations,
+            aria_label="Download videos from past generations",
         )
         refresh_btn.click(fn=list_past_generations, outputs=[past_files])
 
