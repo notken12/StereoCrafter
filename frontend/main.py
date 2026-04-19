@@ -103,7 +103,7 @@ def process_single_video(
     max_res: int,
     fast_preview: bool,
     stereo_scale: float,
-    preview_speedup: float,
+    speedup_rate: float,
     progress_offset: float,
     progress_scale: float,
     progress,
@@ -122,7 +122,7 @@ def process_single_video(
     hfov = float(horizontal_fov_deg) if f_px is None else None
     clamp_px = float(max_disp_px) if max_disp_px > 0 else None
     pl = int(process_length)
-    su = max(1.0, float(preview_speedup)) if fast_preview else 1.0
+    su = max(1.0, float(speedup_rate))
 
     mmap_path = os.path.splitext(splatting_path)[0] + ".depth.mmap"
     p(0.0, f"[{stem}] Estimating metric depth (streaming VDA)...")
@@ -287,7 +287,7 @@ def run_inference(
     max_res: int,
     fast_preview: bool,
     stereo_scale: float,
-    preview_speedup: float,
+    speedup_rate: float,
     progress=gr.Progress(track_tqdm=True),
 ):
     if not input_files:
@@ -309,7 +309,7 @@ def run_inference(
             max_res=int(max_res),
             fast_preview=bool(fast_preview),
             stereo_scale=float(stereo_scale),
-            preview_speedup=float(preview_speedup),
+            speedup_rate=float(speedup_rate),
             progress_offset=idx / n,
             progress_scale=1.0 / n,
             progress=progress,
@@ -347,7 +347,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
         """
         # StereoCrafter
         Convert monocular video to immersive stereoscopic 3D.
-        Depth uses **Metric Video Depth Anything (streaming)**; splatting uses **stereo_scale × f·B / Z**. Use **Fast preview** to skip diffusion and subsample frames in order across the whole **Process length** (see **Preview speedup**); tune **Stereo scale** if metric depth is off.
+        Depth uses **Metric Video Depth Anything (streaming)**; splatting uses **stereo_scale × f·B / Z**. **Processing speedup** subsamples source frames in order for depth+splatting (full pipeline or **Fast preview**). Use **Fast preview** to skip diffusion; tune **Stereo scale** if metric depth is off.
         """
     )
 
@@ -420,18 +420,18 @@ with gr.Blocks(title="StereoCrafter") as demo:
                     value=False,
                     info="Skips StereoCrafter diffusion; SBS/anaglyph are raw splat-only (fast). Use to tune stereo_scale and camera settings.",
                 )
-                preview_speedup = gr.Slider(
-                    label="Preview speedup (fast preview only)",
+                speedup_rate = gr.Slider(
+                    label="Processing speedup",
                     minimum=1.0,
                     maximum=16.0,
                     value=4.0,
                     step=0.5,
-                    info="1 = every frame (slow). Higher = every ~N-th source frame in order, full timeline when Process length is -1; output keeps source FPS so playback is N× shorter/faster.",
+                    info="1 = every source frame. Higher = every N-th frame in order for depth+splatting (full run or fast preview); splatting MP4 keeps source FPS so duration scales ~1/N. Full timeline when Process length is -1.",
                 )
                 stereo_scale = gr.Slider(
                     label="Stereo scale",
                     minimum=0.25,
-                    maximum=4.0,
+                    maximum=10.0,
                     value=1.0,
                     step=0.05,
                     info="Multiplies disparity after f·B/Z (>1 = stronger 3D, same as assuming predicted depth is too large).",
@@ -474,7 +474,7 @@ with gr.Blocks(title="StereoCrafter") as demo:
             max_res,
             fast_preview,
             stereo_scale,
-            preview_speedup,
+            speedup_rate,
         ],
         outputs=[output_sbs, output_anaglyph, output_splatting, output_files],
     ).then(
